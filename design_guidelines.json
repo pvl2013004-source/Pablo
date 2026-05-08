@@ -1,0 +1,102 @@
+{
+  "theme": "LIGHT",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "design_philosophy": "Scholarly, precise, methodical, and authoritative. The interface must feel like an academic manuscript or a high-precision lab tool, not a playful chatbot. We use Swiss & High-Contrast principles: stark black and white, rigid grid systems, sharp borders (no rounded corners), and distinct typographic hierarchy.",
+  "colors": {
+    "background": "#FFFFFF",
+    "surface": "#F9FAFB",
+    "surface_hover": "#F3F4F6",
+    "surface_active": "#E5E7EB",
+    "border": "#E5E7EB",
+    "border_strong": "#111827",
+    "text_primary": "#0A0A0A",
+    "text_secondary": "#52525B",
+    "accent_primary": "#0055FF",
+    "accent_primary_hover": "#0040CC",
+    "accent_data": "#111827",
+    "accent_closing": "#0A0A0A",
+    "error": "#EF4444"
+  },
+  "typography": {
+    "font_families": {
+      "heading": "Chivo, sans-serif",
+      "mono_labels": "IBM Plex Mono, monospace",
+      "body": "IBM Plex Sans, sans-serif"
+    },
+    "hierarchy": {
+      "h1": "text-3xl sm:text-4xl font-black tracking-tight text-text_primary",
+      "h2": "text-xl sm:text-2xl font-bold tracking-tight text-text_primary",
+      "h3": "text-lg font-bold tracking-tight text-text_primary",
+      "mono_overline": "text-xs font-mono uppercase tracking-[0.2em] text-text_secondary",
+      "body": "text-base leading-relaxed text-text_primary",
+      "body_small": "text-sm leading-normal text-text_secondary"
+    },
+    "installation": "Add Google Fonts imports for Chivo, IBM Plex Mono, and IBM Plex Sans in index.css"
+  },
+  "layout": {
+    "spacing_scale": "Generous spacing for breathing room, specifically p-4 to p-8 for containers, gap-8 for structural separation.",
+    "page_structure": "Two-column dashboard layout. Left sidebar for history (w-64 or w-72 on desktop, hidden on mobile behind hamburger). Main right area for chat stream.",
+    "chat_container": "max-w-4xl mx-auto w-full px-4 sm:px-8 pb-32 pt-8",
+    "borders": "Use sharp borders. rounded-none or max rounded-sm for subtle interactive elements. 1px solid borders for separation."
+  },
+  "components": {
+    "sidebar": {
+      "background": "bg-surface",
+      "border": "border-r border-border",
+      "history_item": "flex items-center gap-3 p-3 text-sm text-text_secondary hover:bg-surface_hover hover:text-text_primary transition-colors cursor-pointer border-l-2 border-transparent hover:border-text_primary",
+      "new_chat_btn": "w-full flex items-center justify-center gap-2 bg-text_primary text-white p-3 hover:bg-black/80 transition-colors font-mono uppercase text-xs tracking-widest"
+    },
+    "chat_input": {
+      "container": "fixed bottom-0 right-0 left-0 md:left-64 bg-background/90 backdrop-blur-xl border-t border-border p-4 sm:p-6",
+      "inner_wrapper": "max-w-4xl mx-auto flex gap-4",
+      "input_field": "flex-1 bg-surface border border-border focus:border-text_primary focus:ring-1 focus:ring-text_primary p-4 text-base font-body outline-none transition-all placeholder:text-text_secondary/50 rounded-none",
+      "send_button": "bg-accent_primary text-white px-6 sm:px-8 py-4 hover:bg-accent_primary_hover transition-colors font-bold flex items-center justify-center rounded-none"
+    },
+    "tutor_message": {
+      "container": "mb-12 flex flex-col gap-6",
+      "section_wrapper": "pl-4 border-l-2 border-border flex flex-col gap-2",
+      "archivo_de_datos": "border-l-2 border-text_primary pl-4 bg-surface p-4",
+      "paso_activo": "border-l-2 border-accent_primary pl-4 bg-accent_primary/5 p-4 text-accent_primary",
+      "accion_de_cierre": "border-l-2 border-border pl-4 p-4 font-bold italic",
+      "label": "font-mono text-xs uppercase tracking-widest text-text_secondary mb-2 block"
+    },
+    "user_message": {
+      "container": "mb-12 flex flex-col items-end",
+      "bubble": "bg-surface border border-border p-4 max-w-[80%] text-text_primary font-body"
+    },
+    "empty_state": {
+      "container": "flex flex-col items-center justify-center h-[60vh] text-center max-w-xl mx-auto",
+      "icon_wrapper": "mb-6 text-text_primary opacity-20",
+      "title": "font-heading text-3xl font-black mb-4",
+      "subtitle": "text-text_secondary mb-12 font-mono text-sm uppercase tracking-widest",
+      "suggestion_cards": "grid grid-cols-1 sm:grid-cols-2 gap-4 w-full",
+      "suggestion_card": "text-left p-4 border border-border hover:border-text_primary hover:shadow-sm cursor-pointer transition-all bg-background rounded-none group"
+    }
+  },
+  "interactions": {
+    "hover": "Hover states must increase contrast. Text becomes darker, borders become sharper.",
+    "focus": "All interactive elements must have a sharp 1px or 2px outline (ring-1 ring-text_primary).",
+    "animation": "Minimalist. Avoid bouncy animations. Use strict opacity and subtle translate transitions (duration-200 ease-out)."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1656340194408-750a488b6a80?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwZ2VvbWV0cmljJTIwYWJzdHJhY3QlMjBhcmNoaXRlY3R1cmV8ZW58MHx8fHwxNzc4MjQ3MzAyfDA&ixlib=rb-4.1.0&q=85",
+        "category": "empty_state_background",
+        "description": "Optional abstract geometric architecture photo to use at low opacity (e.g., 5%) as a watermark in the empty state or background."
+      }
+    ],
+    "icons": "Use lucide-react. Prefer sharp, un-rounded icons if possible, or stick to standard Lucide with strokeWidth 1.5 for a delicate, precise look."
+  },
+  "testing": {
+    "requirements": "All interactive elements MUST include a 'data-testid' attribute (e.g., data-testid='send-button', data-testid='new-session-button', data-testid='prompt-input')."
+  },
+  "instructions_to_main_agent": [
+    "Install lucide-react and react-markdown for message rendering.",
+    "Import Chivo, IBM Plex Mono, and IBM Plex Sans from Google Fonts.",
+    "Implement the UI precisely without border-radius (rounded-none) to maintain the brutalist, scholarly aesthetic.",
+    "Ensure the tutor's response strictly renders in the three distinct visual sections (Archivo de Datos, Paso Activo, Acción de Cierre) using the classes provided in the components.tutor_message guidelines.",
+    "Do not use conversational UI bubbles for the tutor; use the manuscript/document style described.",
+    "Add 'data-testid' attributes to all interactive elements."
+  ]
+}
