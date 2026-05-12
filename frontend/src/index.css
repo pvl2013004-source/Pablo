@@ -6,17 +6,22 @@
 @tailwind utilities;
 
 :root {
-    --bg: #FFFFFF;
-    --surface: #F9FAFB;
-    --surface-hover: #F3F4F6;
-    --surface-active: #E5E7EB;
-    --border: #E5E7EB;
-    --border-strong: #111827;
-    --text-primary: #0A0A0A;
-    --text-secondary: #52525B;
-    --accent: #0055FF;
-    --accent-hover: #0040CC;
-    --error: #EF4444;
+    /* SYVREN brand palette - deep navy + electric blues */
+    --bg: #050B1F;
+    --bg-deep: #030717;
+    --surface: #0A1430;
+    --surface-hover: #0F1B3D;
+    --surface-active: #15244F;
+    --border: #16234A;
+    --border-strong: #2A3D75;
+    --text-primary: #E6ECFB;
+    --text-secondary: #8AA0CE;
+    --text-muted: #5E7AB5;
+    --accent: #3B82F6;       /* electric blue from logo */
+    --accent-hover: #60A5FA;
+    --accent-soft: #1E40AF;
+    --accent-cyan: #22D3EE;  /* cyan highlight from logo */
+    --error: #F87171;
 }
 
 body {
@@ -33,7 +38,7 @@ body {
 .font-body { font-family: 'IBM Plex Sans', sans-serif; }
 
 /* Markdown reset for tutor responses */
-.markdown-content { font-family: 'IBM Plex Sans', sans-serif; }
+.markdown-content { font-family: 'IBM Plex Sans', sans-serif; color: var(--text-primary); }
 .markdown-content h2 {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 0.75rem;
@@ -46,20 +51,26 @@ body {
 .markdown-content p { margin: 0.25rem 0; line-height: 1.6; }
 .markdown-content ul { margin: 0.5rem 0; padding-left: 1.25rem; }
 .markdown-content li { margin: 0.15rem 0; line-height: 1.5; }
-.markdown-content strong { font-weight: 700; color: var(--text-primary); }
+.markdown-content strong { font-weight: 700; color: #FFFFFF; }
 .markdown-content code {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 0.9em;
     background: var(--surface-active);
-    padding: 0.1rem 0.3rem;
+    color: var(--accent-cyan);
+    padding: 0.1rem 0.35rem;
 }
-.markdown-content .katex { font-size: 1.05em; }
+.markdown-content .katex { font-size: 1.05em; color: var(--text-primary); }
+
+/* Subtle radial glow behind logo / hero */
+.brand-glow {
+    background: radial-gradient(circle at 50% 40%, rgba(59,130,246,0.18), rgba(34,211,238,0.05) 35%, transparent 65%);
+}
 
 /* Custom scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--surface-active); }
-::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-soft); }
 
 /* Loading dots */
 @keyframes blink {
@@ -68,10 +79,11 @@ body {
 }
 .loading-dot {
     width: 6px; height: 6px;
-    background: var(--text-primary);
+    background: var(--accent);
     display: inline-block;
     margin: 0 2px;
     animation: blink 1.2s infinite both;
+    box-shadow: 0 0 8px var(--accent);
 }
 .loading-dot:nth-child(2) { animation-delay: 0.2s; }
 .loading-dot:nth-child(3) { animation-delay: 0.4s; }
@@ -79,3 +91,6 @@ body {
 @layer base {
     * { border-color: var(--border); }
 }
+
+/* Selection */
+::selection { background: var(--accent); color: white; }
