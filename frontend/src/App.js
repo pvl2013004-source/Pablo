@@ -4,18 +4,117 @@ import axios from "axios";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Plus, Send, Trash2, Menu, X } from "lucide-react";
+import { Plus, Send, Trash2, Menu, X, Globe, Check } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const LOGO_SRC = "/syvren-logo.jpeg";
 
-const SUGGESTIONS = [
-  { title: "Triángulo rectángulo", prompt: "Quiero calcular la hipotenusa de un triángulo con catetos de 3 y 4." },
-  { title: "Verbo en pretérito", prompt: "Necesito conjugar el verbo 'tener' en pretérito indefinido." },
-  { title: "Ecuación cuadrática", prompt: "Quiero resolver la ecuación x² - 5x + 6 = 0." },
-  { title: "Derivada de función", prompt: "Quiero hallar la derivada de f(x) = 3x² + 2x - 1." },
+const LANGS = [
+  { code: "es", label: "Español", short: "ES" },
+  { code: "en", label: "English", short: "EN" },
+  { code: "fr", label: "Français", short: "FR" },
+  { code: "pt", label: "Português", short: "PT" },
 ];
+
+const I18N = {
+  es: {
+    new_session: "Nueva sesión",
+    history: "Historial",
+    no_sessions: "Sin sesiones aún.",
+    placeholder: "Plantea tu problema o duda académica…",
+    send: "Enviar",
+    hint: "Enter para enviar · Shift + Enter para nueva línea",
+    method_label: "v1.0 — Método activo",
+    hero_chip: "Sistema · Método activo · Sin respuestas finales",
+    hero_title_1: "Tutor",
+    hero_title_2: "Metodológico.",
+    hero_desc: "No te entrego el resultado. Te entrego los datos, una sola acción y una pregunta. Aprendes haciendo el siguiente paso.",
+    start_with: "Inicia con un ejemplo",
+    error_msg: "Error: no se pudo obtener respuesta del modelo.",
+    section_archivo: "Archivo de Datos",
+    section_paso: "Paso Activo",
+    section_cierre: "Acción de Cierre",
+    suggestions: [
+      { title: "Triángulo rectángulo", prompt: "Quiero calcular la hipotenusa de un triángulo con catetos de 3 y 4." },
+      { title: "Multiplicación", prompt: "Quiero calcular 23 × 47 paso a paso." },
+      { title: "Ecuación cuadrática", prompt: "Quiero resolver la ecuación x² - 5x + 6 = 0." },
+      { title: "Derivada de función", prompt: "Quiero hallar la derivada de f(x) = 3x² + 2x - 1." },
+    ],
+  },
+  en: {
+    new_session: "New session",
+    history: "History",
+    no_sessions: "No sessions yet.",
+    placeholder: "Pose your problem or academic question…",
+    send: "Send",
+    hint: "Enter to send · Shift + Enter for newline",
+    method_label: "v1.0 — Active method",
+    hero_chip: "System · Active method · No final answers",
+    hero_title_1: "Methodological",
+    hero_title_2: "Tutor.",
+    hero_desc: "I won't hand you the result. I give you the data, one single action and one question. You learn by taking the next step.",
+    start_with: "Start with an example",
+    error_msg: "Error: could not get a response from the model.",
+    section_archivo: "Data File",
+    section_paso: "Active Step",
+    section_cierre: "Closing Action",
+    suggestions: [
+      { title: "Right triangle", prompt: "I want to calculate the hypotenuse of a triangle with legs 3 and 4." },
+      { title: "Multiplication", prompt: "I want to compute 23 × 47 step by step." },
+      { title: "Quadratic equation", prompt: "I want to solve the equation x² - 5x + 6 = 0." },
+      { title: "Derivative", prompt: "I want to find the derivative of f(x) = 3x² + 2x - 1." },
+    ],
+  },
+  fr: {
+    new_session: "Nouvelle session",
+    history: "Historique",
+    no_sessions: "Aucune session encore.",
+    placeholder: "Pose ton problème ou ta question académique…",
+    send: "Envoyer",
+    hint: "Entrée pour envoyer · Maj + Entrée pour nouvelle ligne",
+    method_label: "v1.0 — Méthode active",
+    hero_chip: "Système · Méthode active · Sans réponses finales",
+    hero_title_1: "Tuteur",
+    hero_title_2: "Méthodologique.",
+    hero_desc: "Je ne te donne pas le résultat. Je te donne les données, une seule action et une question. Tu apprends en faisant le pas suivant.",
+    start_with: "Commence par un exemple",
+    error_msg: "Erreur : impossible d'obtenir une réponse du modèle.",
+    section_archivo: "Fichier de Données",
+    section_paso: "Étape Active",
+    section_cierre: "Action de Clôture",
+    suggestions: [
+      { title: "Triangle rectangle", prompt: "Je veux calculer l'hypoténuse d'un triangle avec des côtés 3 et 4." },
+      { title: "Multiplication", prompt: "Je veux calculer 23 × 47 étape par étape." },
+      { title: "Équation quadratique", prompt: "Je veux résoudre l'équation x² - 5x + 6 = 0." },
+      { title: "Dérivée", prompt: "Je veux trouver la dérivée de f(x) = 3x² + 2x - 1." },
+    ],
+  },
+  pt: {
+    new_session: "Nova sessão",
+    history: "Histórico",
+    no_sessions: "Nenhuma sessão ainda.",
+    placeholder: "Coloque seu problema ou dúvida acadêmica…",
+    send: "Enviar",
+    hint: "Enter para enviar · Shift + Enter para nova linha",
+    method_label: "v1.0 — Método ativo",
+    hero_chip: "Sistema · Método ativo · Sem respostas finais",
+    hero_title_1: "Tutor",
+    hero_title_2: "Metodológico.",
+    hero_desc: "Não te entrego o resultado. Te entrego os dados, uma única ação e uma pergunta. Você aprende dando o próximo passo.",
+    start_with: "Comece com um exemplo",
+    error_msg: "Erro: não foi possível obter resposta do modelo.",
+    section_archivo: "Arquivo de Dados",
+    section_paso: "Passo Ativo",
+    section_cierre: "Ação de Encerramento",
+    suggestions: [
+      { title: "Triângulo retângulo", prompt: "Quero calcular a hipotenusa de um triângulo com catetos de 3 e 4." },
+      { title: "Multiplicação", prompt: "Quero calcular 23 × 47 passo a passo." },
+      { title: "Equação quadrática", prompt: "Quero resolver a equação x² - 5x + 6 = 0." },
+      { title: "Derivada", prompt: "Quero achar a derivada de f(x) = 3x² + 2x - 1." },
+    ],
+  },
+};
 
 function Brand({ size = "md" }) {
   const dims = size === "lg" ? { img: 64, title: "text-2xl", sub: "text-[10px]" } : { img: 38, title: "text-base", sub: "text-[9px]" };
@@ -48,6 +147,67 @@ function Brand({ size = "md" }) {
   );
 }
 
+function LangSwitcher({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    function onDocClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+  const current = LANGS.find((l) => l.code === value) || LANGS[0];
+  return (
+    <div ref={ref} className="relative" data-testid="lang-switcher">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono uppercase tracking-[0.15em] border transition-all"
+        style={{
+          background: "var(--surface)",
+          borderColor: "var(--border)",
+          color: "var(--text-primary)",
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+        onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+        data-testid="lang-button"
+        aria-label="Change language"
+      >
+        <Globe size={12} strokeWidth={2} />
+        <span>{current.short}</span>
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 mt-2 z-40 min-w-[140px] border shadow-xl"
+          style={{ background: "var(--bg-deep)", borderColor: "var(--border-strong)" }}
+          data-testid="lang-menu"
+        >
+          {LANGS.map((l) => {
+            const active = l.code === value;
+            return (
+              <button
+                key={l.code}
+                onClick={() => { onChange(l.code); setOpen(false); }}
+                className="w-full flex items-center justify-between gap-3 px-3 py-2 text-xs font-mono uppercase tracking-[0.15em] transition-colors"
+                style={{
+                  color: active ? "var(--accent-cyan)" : "var(--text-secondary)",
+                  background: active ? "var(--surface-hover)" : "transparent",
+                }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--surface)"; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
+                data-testid={`lang-option-${l.code}`}
+              >
+                <span>{l.short} · {l.label}</span>
+                {active && <Check size={12} strokeWidth={2.5} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LoadingDots() {
   return (
     <div className="flex items-center gap-1 py-2" data-testid="loading-indicator">
@@ -58,9 +218,8 @@ function LoadingDots() {
   );
 }
 
-function TutorMessage({ content }) {
+function TutorMessage({ content, t }) {
   const sections = parseSections(content);
-
   return (
     <div className="mb-12 flex flex-col gap-4" data-testid="tutor-message">
       {sections.archivo && (
@@ -70,36 +229,27 @@ function TutorMessage({ content }) {
           data-testid="section-archivo-datos"
         >
           <span className="font-mono text-[10px] uppercase tracking-[0.25em]" style={{ color: "var(--accent-cyan)" }}>
-            01 — Archivo de Datos
+            01 — {t.section_archivo}
           </span>
           <div className="mt-2">
-            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-              {sections.archivo}
-            </ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{sections.archivo}</ReactMarkdown>
           </div>
         </section>
       )}
-
       {sections.paso && (
         <section
           className="border-l-2 pl-4 p-4 markdown-content"
-          style={{
-            borderColor: "var(--accent)",
-            background: "linear-gradient(90deg, rgba(59,130,246,0.12), rgba(59,130,246,0.02))",
-          }}
+          style={{ borderColor: "var(--accent)", background: "linear-gradient(90deg, rgba(59,130,246,0.12), rgba(59,130,246,0.02))" }}
           data-testid="section-paso-activo"
         >
           <span className="font-mono text-[10px] uppercase tracking-[0.25em]" style={{ color: "var(--accent-hover)" }}>
-            02 — Paso Activo
+            02 — {t.section_paso}
           </span>
           <div className="mt-2" style={{ color: "#DBEAFE" }}>
-            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-              {sections.paso}
-            </ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{sections.paso}</ReactMarkdown>
           </div>
         </section>
       )}
-
       {sections.cierre && (
         <section
           className="border-l-2 pl-4 p-4 markdown-content italic"
@@ -107,38 +257,40 @@ function TutorMessage({ content }) {
           data-testid="section-accion-cierre"
         >
           <span className="font-mono text-[10px] uppercase tracking-[0.25em] not-italic" style={{ color: "var(--text-secondary)" }}>
-            03 — Acción de Cierre
+            03 — {t.section_cierre}
           </span>
           <div className="mt-2 font-bold">
-            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-              {sections.cierre}
-            </ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{sections.cierre}</ReactMarkdown>
           </div>
         </section>
       )}
-
       {!sections.archivo && !sections.paso && !sections.cierre && (
         <div className="markdown-content p-4 border-l-2" style={{ borderColor: "var(--border-strong)" }}>
-          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-            {content}
-          </ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{content}</ReactMarkdown>
         </div>
       )}
     </div>
   );
 }
 
+// Section keywords across languages
+const SECTION_MAP = {
+  archivo: ["archivo de datos", "data file", "fichier de données", "fichier de donnees", "arquivo de dados"],
+  paso: ["paso activo", "active step", "étape active", "etape active", "passo ativo"],
+  cierre: ["acción de cierre", "accion de cierre", "closing action", "action de clôture", "action de cloture", "ação de encerramento", "acao de encerramento"],
+};
+
 function parseSections(text) {
   const out = { archivo: "", paso: "", cierre: "" };
   if (!text) return out;
-  const regex = /##\s*(Archivo de Datos|Paso Activo|Acción de Cierre|Accion de Cierre)\s*\n([\s\S]*?)(?=\n##\s|$)/gi;
+  const regex = /##\s*([^\n]+?)\s*\n([\s\S]*?)(?=\n##\s|$)/g;
   let match;
   while ((match = regex.exec(text)) !== null) {
-    const key = match[1].toLowerCase();
+    const heading = match[1].toLowerCase().trim();
     const body = match[2].trim();
-    if (key.includes("archivo")) out.archivo = body;
-    else if (key.includes("paso")) out.paso = body;
-    else if (key.includes("cierre") || key.includes("acción") || key.includes("accion")) out.cierre = body;
+    if (SECTION_MAP.archivo.some((k) => heading.includes(k))) out.archivo = body;
+    else if (SECTION_MAP.paso.some((k) => heading.includes(k))) out.paso = body;
+    else if (SECTION_MAP.cierre.some((k) => heading.includes(k))) out.cierre = body;
   }
   return out;
 }
@@ -148,11 +300,7 @@ function UserMessage({ content }) {
     <div className="mb-12 flex flex-col items-end" data-testid="user-message">
       <div
         className="p-4 max-w-[80%] font-body border"
-        style={{
-          background: "var(--surface)",
-          borderColor: "var(--border-strong)",
-          color: "var(--text-primary)",
-        }}
+        style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text-primary)" }}
       >
         {content}
       </div>
@@ -167,9 +315,12 @@ function App() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [lang, setLang] = useState(() => localStorage.getItem("syvren_lang") || "es");
   const scrollRef = useRef(null);
+  const t = I18N[lang] || I18N.es;
 
   useEffect(() => { fetchSessions(); }, []);
+  useEffect(() => { localStorage.setItem("syvren_lang", lang); }, [lang]);
 
   useEffect(() => {
     if (activeSessionId) fetchMessages(activeSessionId);
@@ -230,7 +381,7 @@ function App() {
     const tempId = "tmp-" + Date.now();
     setMessages((m) => [...m, { id: tempId, session_id: sid, role: "user", content: text }]);
     try {
-      const { data } = await axios.post(`${API}/chat/sessions/${sid}/message`, { content: text });
+      const { data } = await axios.post(`${API}/chat/sessions/${sid}/message`, { content: text, language: lang });
       setMessages((m) => {
         const map = new Map(m.filter((x) => x.id !== tempId).map((x) => [x.id, x]));
         map.set(data.user_message.id, data.user_message);
@@ -245,7 +396,7 @@ function App() {
       console.error(e);
       setMessages((m) => [
         ...m,
-        { id: "err-" + Date.now(), session_id: sid, role: "assistant", content: "Error: no se pudo obtener respuesta del modelo." },
+        { id: "err-" + Date.now(), session_id: sid, role: "assistant", content: t.error_msg },
       ]);
     } finally {
       setSending(false);
@@ -281,7 +432,7 @@ function App() {
           <button
             className="md:hidden"
             onClick={() => setSidebarOpen(false)}
-            aria-label="Cerrar"
+            aria-label="Close"
             data-testid="close-sidebar-btn"
             style={{ color: "var(--text-secondary)" }}
           >
@@ -302,17 +453,15 @@ function App() {
           onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.1)")}
           onMouseLeave={(e) => (e.currentTarget.style.filter = "brightness(1)")}
         >
-          <Plus size={14} strokeWidth={2.5} /> Nueva sesión
+          <Plus size={14} strokeWidth={2.5} /> {t.new_session}
         </button>
 
         <div className="flex-1 overflow-y-auto px-2 pb-4" data-testid="session-list">
           <div className="font-mono text-[10px] uppercase tracking-[0.25em] px-2 py-2" style={{ color: "var(--text-muted)" }}>
-            Historial
+            {t.history}
           </div>
           {sessions.length === 0 && (
-            <div className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>
-              Sin sesiones aún.
-            </div>
+            <div className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>{t.no_sessions}</div>
           )}
           {sessions.map((s) => {
             const active = activeSessionId === s.id;
@@ -327,16 +476,10 @@ function App() {
                   color: active ? "var(--text-primary)" : "var(--text-secondary)",
                 }}
                 onMouseEnter={(e) => {
-                  if (!active) {
-                    e.currentTarget.style.background = "var(--surface)";
-                    e.currentTarget.style.color = "var(--text-primary)";
-                  }
+                  if (!active) { e.currentTarget.style.background = "var(--surface)"; e.currentTarget.style.color = "var(--text-primary)"; }
                 }}
                 onMouseLeave={(e) => {
-                  if (!active) {
-                    e.currentTarget.style.background = "transparent";
-                    e.currentTarget.style.color = "var(--text-secondary)";
-                  }
+                  if (!active) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary)"; }
                 }}
                 data-testid={`session-item-${s.id}`}
               >
@@ -344,7 +487,7 @@ function App() {
                 <button
                   onClick={(e) => deleteSession(s.id, e)}
                   className="opacity-0 group-hover:opacity-100 transition-opacity"
-                  aria-label="Borrar sesión"
+                  aria-label="Delete"
                   data-testid={`delete-session-${s.id}`}
                   style={{ color: "var(--text-muted)" }}
                 >
@@ -356,32 +499,37 @@ function App() {
         </div>
 
         <div className="p-4 border-t font-mono text-[10px] uppercase tracking-[0.2em]" style={{ borderColor: "var(--border)", color: "var(--text-muted)" }}>
-          v1.0 — Método activo
+          {t.method_label}
         </div>
       </aside>
 
       {/* Main area */}
-      <main className="flex-1 flex flex-col min-w-0">
+      <main className="flex-1 flex flex-col min-w-0 relative">
+        {/* Top bar (desktop) - lang switcher in top right */}
+        <div className="hidden md:flex absolute top-4 right-6 z-20" data-testid="top-bar-desktop">
+          <LangSwitcher value={lang} onChange={setLang} />
+        </div>
+
         {/* Top bar (mobile) */}
         <header className="md:hidden flex items-center justify-between p-4 border-b" style={{ borderColor: "var(--border)", background: "var(--bg-deep)" }}>
-          <button onClick={() => setSidebarOpen(true)} aria-label="Abrir menú" data-testid="open-sidebar-btn" style={{ color: "var(--text-primary)" }}>
+          <button onClick={() => setSidebarOpen(true)} aria-label="Open menu" data-testid="open-sidebar-btn" style={{ color: "var(--text-primary)" }}>
             <Menu size={20} />
           </button>
           <Brand size="md" />
-          <div style={{ width: 20 }} />
+          <LangSwitcher value={lang} onChange={setLang} />
         </header>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto pb-40">
           <div className="max-w-3xl mx-auto w-full px-4 sm:px-8 pt-12">
             {messages.length === 0 ? (
-              <EmptyState onPick={(p) => sendMessage(p)} />
+              <EmptyState t={t} onPick={(p) => sendMessage(p)} />
             ) : (
               <>
                 {messages.map((m) =>
                   m.role === "user" ? (
                     <UserMessage key={m.id} content={m.content} />
                   ) : (
-                    <TutorMessage key={m.id} content={m.content} />
+                    <TutorMessage key={m.id} content={m.content} t={t} />
                   )
                 )}
                 {sending && <LoadingDots />}
@@ -393,11 +541,7 @@ function App() {
         {/* Input bar */}
         <div
           className="fixed bottom-0 right-0 left-0 md:left-72 border-t p-4 sm:p-6"
-          style={{
-            background: "rgba(5,11,31,0.85)",
-            backdropFilter: "blur(14px)",
-            borderColor: "var(--border)",
-          }}
+          style={{ background: "rgba(5,11,31,0.85)", backdropFilter: "blur(14px)", borderColor: "var(--border)" }}
           data-testid="input-bar"
         >
           <div className="max-w-3xl mx-auto flex gap-3 items-stretch">
@@ -405,14 +549,10 @@ function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Plantea tu problema o duda académica…"
+              placeholder={t.placeholder}
               rows={1}
               className="flex-1 p-4 text-base font-body outline-none resize-none border transition-colors"
-              style={{
-                background: "var(--surface)",
-                borderColor: "var(--border)",
-                color: "var(--text-primary)",
-              }}
+              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--text-primary)" }}
               onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
               onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
               data-testid="prompt-input"
@@ -431,71 +571,52 @@ function App() {
               data-testid="send-button"
             >
               <Send size={16} strokeWidth={2.5} />
-              <span className="hidden sm:inline font-mono uppercase text-xs tracking-[0.2em]">Enviar</span>
+              <span className="hidden sm:inline font-mono uppercase text-xs tracking-[0.2em]">{t.send}</span>
             </button>
           </div>
           <div className="max-w-3xl mx-auto mt-2 font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: "var(--text-muted)" }}>
-            Enter para enviar · Shift + Enter para nueva línea
+            {t.hint}
           </div>
         </div>
       </main>
 
-      {/* Mobile sidebar overlay */}
       {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 z-20 md:hidden"
-          onClick={() => setSidebarOpen(false)}
-          data-testid="sidebar-overlay"
-        />
+        <div className="fixed inset-0 bg-black/60 z-20 md:hidden" onClick={() => setSidebarOpen(false)} data-testid="sidebar-overlay" />
       )}
     </div>
   );
 }
 
-function EmptyState({ onPick }) {
+function EmptyState({ t, onPick }) {
   return (
     <div className="flex flex-col items-start max-w-2xl mx-auto pt-8 pb-12" data-testid="empty-state">
       <div className="brand-glow w-full flex flex-col items-start py-8 -my-8">
         <Brand size="lg" />
         <span className="font-mono text-[10px] uppercase tracking-[0.3em] mt-8" style={{ color: "var(--text-muted)" }}>
-          Sistema · Método activo · Sin respuestas finales
+          {t.hero_chip}
         </span>
-        <h1
-          className="font-heading text-4xl sm:text-5xl font-black tracking-tight mt-4 leading-[1.05]"
-          style={{ color: "var(--text-primary)" }}
-        >
-          Tutor<br/>
-          <span
-            style={{
-              background: "linear-gradient(135deg, #60A5FA 0%, #22D3EE 100%)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-            }}
-          >
-            Metodológico.
+        <h1 className="font-heading text-4xl sm:text-5xl font-black tracking-tight mt-4 leading-[1.05]" style={{ color: "var(--text-primary)" }}>
+          {t.hero_title_1}<br/>
+          <span style={{ background: "linear-gradient(135deg, #60A5FA 0%, #22D3EE 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+            {t.hero_title_2}
           </span>
         </h1>
         <p className="mt-6 text-base leading-relaxed max-w-xl" style={{ color: "var(--text-secondary)" }}>
-          No te entrego el resultado. Te entrego los datos, una sola acción y una pregunta.
-          Aprendes haciendo el siguiente paso.
+          {t.hero_desc}
         </p>
       </div>
 
       <div className="mt-12 w-full">
         <span className="font-mono text-[10px] uppercase tracking-[0.25em]" style={{ color: "var(--text-muted)" }}>
-          Inicia con un ejemplo
+          {t.start_with}
         </span>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-          {SUGGESTIONS.map((s, i) => (
+          {t.suggestions.map((s, i) => (
             <button
               key={i}
               onClick={() => onPick(s.prompt)}
               className="text-left p-4 border transition-all"
-              style={{
-                background: "var(--surface)",
-                borderColor: "var(--border)",
-                color: "var(--text-primary)",
-              }}
+              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--text-primary)" }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.borderColor = "var(--accent)";
                 e.currentTarget.style.background = "var(--surface-hover)";
@@ -512,9 +633,7 @@ function EmptyState({ onPick }) {
                 {String(i + 1).padStart(2, "0")}
               </div>
               <div className="font-heading font-bold text-base leading-tight">{s.title}</div>
-              <div className="text-sm mt-2" style={{ color: "var(--text-secondary)" }}>
-                {s.prompt}
-              </div>
+              <div className="text-sm mt-2" style={{ color: "var(--text-secondary)" }}>{s.prompt}</div>
             </button>
           ))}
         </div>
