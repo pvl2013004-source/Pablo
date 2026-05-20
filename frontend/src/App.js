@@ -4,7 +4,7 @@ import axios from "axios";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Plus, Send, Trash2, Menu, X, Globe, Check } from "lucide-react";
+import { Plus, Send, Trash2, Menu, X, Globe, Check, Paperclip } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -35,6 +35,10 @@ const I18N = {
     section_archivo: "Archivo de Datos",
     section_paso: "Paso Activo",
     section_cierre: "Acción de Cierre",
+    attach: "Adjuntar imagen",
+    attach_too_big: "Imagen demasiado grande. Máx. 5 MB.",
+    attach_bad_format: "Formato no soportado. Usa JPG, PNG o WEBP.",
+    remove_attachment: "Quitar adjunto",
     suggestions: [
       { title: "Triángulo rectángulo", prompt: "Quiero calcular la hipotenusa de un triángulo con catetos de 3 y 4." },
       { title: "Multiplicación", prompt: "Quiero calcular 23 × 47 paso a paso." },
@@ -59,6 +63,10 @@ const I18N = {
     section_archivo: "Data File",
     section_paso: "Active Step",
     section_cierre: "Closing Action",
+    attach: "Attach image",
+    attach_too_big: "Image too large. Max 5 MB.",
+    attach_bad_format: "Unsupported format. Use JPG, PNG or WEBP.",
+    remove_attachment: "Remove attachment",
     suggestions: [
       { title: "Right triangle", prompt: "I want to calculate the hypotenuse of a triangle with legs 3 and 4." },
       { title: "Multiplication", prompt: "I want to compute 23 × 47 step by step." },
@@ -83,6 +91,10 @@ const I18N = {
     section_archivo: "Fichier de Données",
     section_paso: "Étape Active",
     section_cierre: "Action de Clôture",
+    attach: "Joindre une image",
+    attach_too_big: "Image trop grande. Max 5 Mo.",
+    attach_bad_format: "Format non supporté. Utilise JPG, PNG ou WEBP.",
+    remove_attachment: "Retirer la pièce jointe",
     suggestions: [
       { title: "Triangle rectangle", prompt: "Je veux calculer l'hypoténuse d'un triangle avec des côtés 3 et 4." },
       { title: "Multiplication", prompt: "Je veux calculer 23 × 47 étape par étape." },
@@ -107,6 +119,10 @@ const I18N = {
     section_archivo: "Arquivo de Dados",
     section_paso: "Passo Ativo",
     section_cierre: "Ação de Encerramento",
+    attach: "Anexar imagem",
+    attach_too_big: "Imagem grande demais. Máx 5 MB.",
+    attach_bad_format: "Formato não suportado. Use JPG, PNG ou WEBP.",
+    remove_attachment: "Remover anexo",
     suggestions: [
       { title: "Triângulo retângulo", prompt: "Quero calcular a hipotenusa de um triângulo com catetos de 3 e 4." },
       { title: "Multiplicação", prompt: "Quero calcular 23 × 47 passo a passo." },
@@ -295,15 +311,27 @@ function parseSections(text) {
   return out;
 }
 
-function UserMessage({ content }) {
+function UserMessage({ content, image_base64, image_mime }) {
   return (
     <div className="mb-12 flex flex-col items-end" data-testid="user-message">
-      <div
-        className="p-4 max-w-[80%] font-body border"
-        style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text-primary)" }}
-      >
-        {content}
-      </div>
+      {image_base64 && (
+        <div className="mb-2 max-w-[80%] border" style={{ borderColor: "var(--border-strong)" }}>
+          <img
+            src={`data:${image_mime || "image/jpeg"};base64,${image_base64}`}
+            alt="attachment"
+            className="max-h-80 object-contain"
+            data-testid="user-message-image"
+          />
+        </div>
+      )}
+      {content && (
+        <div
+          className="p-4 max-w-[80%] font-body border"
+          style={{ background: "var(--surface)", borderColor: "var(--border-strong)", color: "var(--text-primary)" }}
+        >
+          {content}
+        </div>
+      )}
     </div>
   );
 }
@@ -315,8 +343,11 @@ function App() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [attachment, setAttachment] = useState(null); // { base64, mime, dataUrl, name }
+  const [attachError, setAttachError] = useState("");
   const [lang, setLang] = useState(() => localStorage.getItem("syvren_lang") || "es");
   const scrollRef = useRef(null);
+  const fileInputRef = useRef(null);
   const t = I18N[lang] || I18N.es;
 
   useEffect(() => { fetchSessions(); }, []);
@@ -368,20 +399,61 @@ function App() {
     } catch (e) { console.error(e); }
   }
 
+  function onFilePick(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting same file
+    if (!file) return;
+    setAttachError("");
+    const ALLOWED = ["image/jpeg", "image/png", "image/webp"];
+    if (!ALLOWED.includes(file.type)) {
+      setAttachError(t.attach_bad_format);
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setAttachError(t.attach_too_big);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const base64 = String(dataUrl).split(",")[1] || "";
+      setAttachment({ base64, mime: file.type, dataUrl, name: file.name });
+    };
+    reader.readAsDataURL(file);
+  }
+
   async function sendMessage(textArg) {
     const text = (textArg ?? input).trim();
-    if (!text || sending) return;
+    if ((!text && !attachment) || sending) return;
     let sid = activeSessionId;
     if (!sid) {
       sid = await newSession();
       if (!sid) return;
     }
+    const sentAttachment = attachment;
     setInput("");
+    setAttachment(null);
+    setAttachError("");
     setSending(true);
     const tempId = "tmp-" + Date.now();
-    setMessages((m) => [...m, { id: tempId, session_id: sid, role: "user", content: text }]);
+    setMessages((m) => [
+      ...m,
+      {
+        id: tempId,
+        session_id: sid,
+        role: "user",
+        content: text,
+        image_base64: sentAttachment?.base64 || null,
+        image_mime: sentAttachment?.mime || null,
+      },
+    ]);
     try {
-      const { data } = await axios.post(`${API}/chat/sessions/${sid}/message`, { content: text, language: lang });
+      const { data } = await axios.post(`${API}/chat/sessions/${sid}/message`, {
+        content: text,
+        language: lang,
+        image_base64: sentAttachment?.base64 || null,
+        image_mime: sentAttachment?.mime || null,
+      });
       setMessages((m) => {
         const map = new Map(m.filter((x) => x.id !== tempId).map((x) => [x.id, x]));
         map.set(data.user_message.id, data.user_message);
@@ -527,7 +599,7 @@ function App() {
               <>
                 {messages.map((m) =>
                   m.role === "user" ? (
-                    <UserMessage key={m.id} content={m.content} />
+                    <UserMessage key={m.id} content={m.content} image_base64={m.image_base64} image_mime={m.image_mime} />
                   ) : (
                     <TutorMessage key={m.id} content={m.content} t={t} />
                   )
@@ -544,38 +616,112 @@ function App() {
           style={{ background: "rgba(5,11,31,0.85)", backdropFilter: "blur(14px)", borderColor: "var(--border)" }}
           data-testid="input-bar"
         >
-          <div className="max-w-3xl mx-auto flex gap-3 items-stretch">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder={t.placeholder}
-              rows={1}
-              className="flex-1 p-4 text-base font-body outline-none resize-none border transition-colors"
-              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-              onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
-              onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
-              data-testid="prompt-input"
-            />
-            <button
-              onClick={() => sendMessage()}
-              disabled={!input.trim() || sending}
-              className="px-6 sm:px-8 font-bold flex items-center justify-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{
-                background: "linear-gradient(135deg, var(--accent) 0%, var(--accent-cyan) 100%)",
-                color: "#031024",
-                boxShadow: "0 0 0 1px rgba(59,130,246,0.3), 0 4px 24px -8px rgba(59,130,246,0.6)",
-              }}
-              onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.filter = "brightness(1.1)"; }}
-              onMouseLeave={(e) => (e.currentTarget.style.filter = "brightness(1)")}
-              data-testid="send-button"
-            >
-              <Send size={16} strokeWidth={2.5} />
-              <span className="hidden sm:inline font-mono uppercase text-xs tracking-[0.2em]">{t.send}</span>
-            </button>
-          </div>
-          <div className="max-w-3xl mx-auto mt-2 font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: "var(--text-muted)" }}>
-            {t.hint}
+          <div className="max-w-3xl mx-auto">
+            {(attachment || attachError) && (
+              <div className="mb-3 flex items-center gap-3" data-testid="attachment-preview-row">
+                {attachment && (
+                  <div
+                    className="relative inline-flex items-center gap-3 border p-2 pr-3"
+                    style={{ background: "var(--surface)", borderColor: "var(--accent)" }}
+                    data-testid="attachment-preview"
+                  >
+                    <img
+                      src={attachment.dataUrl}
+                      alt="preview"
+                      className="w-12 h-12 object-cover"
+                      style={{ border: "1px solid var(--border)" }}
+                    />
+                    <div className="flex flex-col leading-tight">
+                      <span className="text-xs font-mono uppercase tracking-[0.15em]" style={{ color: "var(--accent-cyan)" }}>
+                        {attachment.mime.split("/")[1].toUpperCase()}
+                      </span>
+                      <span className="text-xs max-w-[180px] truncate" style={{ color: "var(--text-secondary)" }}>
+                        {attachment.name}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setAttachment(null)}
+                      className="ml-2"
+                      aria-label={t.remove_attachment}
+                      data-testid="remove-attachment-btn"
+                      style={{ color: "var(--text-secondary)" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = "var(--error)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-secondary)")}
+                    >
+                      <X size={16} strokeWidth={2} />
+                    </button>
+                  </div>
+                )}
+                {attachError && (
+                  <span
+                    className="text-xs font-mono uppercase tracking-[0.15em]"
+                    style={{ color: "var(--error)" }}
+                    data-testid="attachment-error"
+                  >
+                    {attachError}
+                  </span>
+                )}
+              </div>
+            )}
+            <div className="flex gap-3 items-stretch">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={onFilePick}
+                className="hidden"
+                data-testid="file-input"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center justify-center px-3 border transition-colors"
+                style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--text-secondary)" }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = "var(--accent)";
+                  e.currentTarget.style.color = "var(--accent-cyan)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = "var(--border)";
+                  e.currentTarget.style.color = "var(--text-secondary)";
+                }}
+                aria-label={t.attach}
+                title={t.attach}
+                data-testid="attach-button"
+              >
+                <Paperclip size={18} strokeWidth={2} />
+              </button>
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder={t.placeholder}
+                rows={1}
+                className="flex-1 p-4 text-base font-body outline-none resize-none border transition-colors"
+                style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--text-primary)" }}
+                onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
+                onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+                data-testid="prompt-input"
+              />
+              <button
+                onClick={() => sendMessage()}
+                disabled={(!input.trim() && !attachment) || sending}
+                className="px-6 sm:px-8 font-bold flex items-center justify-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{
+                  background: "linear-gradient(135deg, var(--accent) 0%, var(--accent-cyan) 100%)",
+                  color: "#031024",
+                  boxShadow: "0 0 0 1px rgba(59,130,246,0.3), 0 4px 24px -8px rgba(59,130,246,0.6)",
+                }}
+                onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.filter = "brightness(1.1)"; }}
+                onMouseLeave={(e) => (e.currentTarget.style.filter = "brightness(1)")}
+                data-testid="send-button"
+              >
+                <Send size={16} strokeWidth={2.5} />
+                <span className="hidden sm:inline font-mono uppercase text-xs tracking-[0.2em]">{t.send}</span>
+              </button>
+            </div>
+            <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: "var(--text-muted)" }}>
+              {t.hint}
+            </div>
           </div>
         </div>
       </main>

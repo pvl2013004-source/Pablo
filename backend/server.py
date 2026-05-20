@@ -10,7 +10,7 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 
 
 ROOT_DIR = Path(__file__).parent
@@ -181,6 +181,8 @@ class Message(BaseModel):
     session_id: str
     role: str  # "user" or "assistant"
     content: str
+    image_base64: Optional[str] = None  # only stored on user messages with attachment
+    image_mime: Optional[str] = None
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -195,6 +197,8 @@ class Session(BaseModel):
 class SendMessageRequest(BaseModel):
     content: str
     language: Optional[str] = "es"
+    image_base64: Optional[str] = None  # raw base64 without data: prefix
+    image_mime: Optional[str] = None    # e.g. "image/jpeg", "image/png", "image/webp"
 
 
 class SendMessageResponse(BaseModel):
@@ -245,11 +249,44 @@ async def send_message(session_id: str, payload: SendMessageRequest):
         raise HTTPException(status_code=500, detail="LLM key no configurada")
 
     user_text = payload.content.strip()
-    if not user_text:
+    if not user_text and not payload.image_base64:
         raise HTTPException(status_code=400, detail="Mensaje vacío")
 
-    # Persist user message first
-    user_msg = Message(session_id=session_id, role="user", content=user_text)
+    # Normalize image base64 (strip data URI prefix if present)
+    img_b64 = payload.image_base64
+    img_mime = payload.image_mime
+    if img_b64 and img_b64.startswith("data:"):
+        try:
+            header, b64data = img_b64.split(",", 1)
+            img_b64 = b64data
+            if not img_mime and "image/" in header:
+                img_mime = header.split(";")[0].replace("data:", "")
+        except Exception:
+            pass
+    if img_b64 and not img_mime:
+        img_mime = "image/jpeg"
+    # Validate mime
+    if img_mime and img_mime not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(status_code=400, detail="Formato de imagen no soportado (usa JPEG, PNG o WEBP)")
+
+    # If only image (no text), inject a default question in the right language
+    if not user_text and img_b64:
+        default_q = {
+            "es": "Analiza esta imagen y guíame paso a paso para resolverla.",
+            "en": "Analyze this image and guide me step by step to solve it.",
+            "fr": "Analyse cette image et guide-moi étape par étape pour la résoudre.",
+            "pt": "Analise esta imagem e me guie passo a passo para resolvê-la.",
+        }
+        user_text = default_q.get((payload.language or "es").lower(), default_q["es"])
+
+    # Persist user message first (with image if any)
+    user_msg = Message(
+        session_id=session_id,
+        role="user",
+        content=user_text,
+        image_base64=img_b64,
+        image_mime=img_mime,
+    )
     await db.messages.insert_one(user_msg.model_dump())
 
     # Build chat with prior history. emergentintegrations' LlmChat tracks history per session_id internally,
@@ -278,7 +315,13 @@ async def send_message(session_id: str, payload: SendMessageRequest):
     ).with_model("anthropic", "claude-sonnet-4-5-20250929")
 
     try:
-        response_text = await chat.send_message(UserMessage(text=user_text))
+        if img_b64:
+            image_content = ImageContent(image_base64=img_b64)
+            response_text = await chat.send_message(
+                UserMessage(text=user_text, file_contents=[image_content])
+            )
+        else:
+            response_text = await chat.send_message(UserMessage(text=user_text))
     except Exception as e:
         logger.exception("LLM error")
         raise HTTPException(status_code=500, detail=f"Error del modelo: {str(e)}")
