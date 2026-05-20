@@ -4,7 +4,7 @@ import axios from "axios";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Plus, Send, Trash2, Menu, X, Globe, Check, Paperclip } from "lucide-react";
+import { Plus, Send, Trash2, Menu, X, Globe, Check, Paperclip, FileText } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -35,9 +35,9 @@ const I18N = {
     section_archivo: "Archivo de Datos",
     section_paso: "Paso Activo",
     section_cierre: "Acción de Cierre",
-    attach: "Adjuntar imagen",
-    attach_too_big: "Imagen demasiado grande. Máx. 5 MB.",
-    attach_bad_format: "Formato no soportado. Usa JPG, PNG o WEBP.",
+    attach: "Adjuntar imagen o PDF",
+    attach_too_big: "Archivo demasiado grande. Máx. 5 MB imagen / 10 MB PDF.",
+    attach_bad_format: "Formato no soportado. Usa JPG, PNG, WEBP o PDF.",
     remove_attachment: "Quitar adjunto",
     suggestions: [
       { title: "Triángulo rectángulo", prompt: "Quiero calcular la hipotenusa de un triángulo con catetos de 3 y 4." },
@@ -63,9 +63,9 @@ const I18N = {
     section_archivo: "Data File",
     section_paso: "Active Step",
     section_cierre: "Closing Action",
-    attach: "Attach image",
-    attach_too_big: "Image too large. Max 5 MB.",
-    attach_bad_format: "Unsupported format. Use JPG, PNG or WEBP.",
+    attach: "Attach image or PDF",
+    attach_too_big: "File too large. Max 5 MB image / 10 MB PDF.",
+    attach_bad_format: "Unsupported format. Use JPG, PNG, WEBP or PDF.",
     remove_attachment: "Remove attachment",
     suggestions: [
       { title: "Right triangle", prompt: "I want to calculate the hypotenuse of a triangle with legs 3 and 4." },
@@ -91,9 +91,9 @@ const I18N = {
     section_archivo: "Fichier de Données",
     section_paso: "Étape Active",
     section_cierre: "Action de Clôture",
-    attach: "Joindre une image",
-    attach_too_big: "Image trop grande. Max 5 Mo.",
-    attach_bad_format: "Format non supporté. Utilise JPG, PNG ou WEBP.",
+    attach: "Joindre image ou PDF",
+    attach_too_big: "Fichier trop grand. Max 5 Mo image / 10 Mo PDF.",
+    attach_bad_format: "Format non supporté. Utilise JPG, PNG, WEBP ou PDF.",
     remove_attachment: "Retirer la pièce jointe",
     suggestions: [
       { title: "Triangle rectangle", prompt: "Je veux calculer l'hypoténuse d'un triangle avec des côtés 3 et 4." },
@@ -119,9 +119,9 @@ const I18N = {
     section_archivo: "Arquivo de Dados",
     section_paso: "Passo Ativo",
     section_cierre: "Ação de Encerramento",
-    attach: "Anexar imagem",
-    attach_too_big: "Imagem grande demais. Máx 5 MB.",
-    attach_bad_format: "Formato não suportado. Use JPG, PNG ou WEBP.",
+    attach: "Anexar imagem ou PDF",
+    attach_too_big: "Arquivo grande demais. Máx 5 MB imagem / 10 MB PDF.",
+    attach_bad_format: "Formato não suportado. Use JPG, PNG, WEBP ou PDF.",
     remove_attachment: "Remover anexo",
     suggestions: [
       { title: "Triângulo retângulo", prompt: "Quero calcular a hipotenusa de um triângulo com catetos de 3 e 4." },
@@ -311,7 +311,7 @@ function parseSections(text) {
   return out;
 }
 
-function UserMessage({ content, image_base64, image_mime }) {
+function UserMessage({ content, image_base64, image_mime, pdf_name, pdf_pages }) {
   return (
     <div className="mb-12 flex flex-col items-end" data-testid="user-message">
       {image_base64 && (
@@ -322,6 +322,24 @@ function UserMessage({ content, image_base64, image_mime }) {
             className="max-h-80 object-contain"
             data-testid="user-message-image"
           />
+        </div>
+      )}
+      {pdf_name && (
+        <div
+          className="mb-2 inline-flex items-center gap-3 border px-3 py-2"
+          style={{ background: "var(--surface)", borderColor: "var(--accent-cyan)" }}
+          data-testid="user-message-pdf"
+        >
+          <FileText size={18} strokeWidth={1.8} style={{ color: "var(--accent-cyan)" }} />
+          <div className="flex flex-col leading-tight">
+            <span className="text-xs font-mono uppercase tracking-[0.15em]" style={{ color: "var(--accent-cyan)" }}>PDF</span>
+            <span className="text-sm max-w-[260px] truncate" style={{ color: "var(--text-primary)" }}>{pdf_name}</span>
+            {pdf_pages != null && (
+              <span className="text-[10px] font-mono uppercase tracking-[0.15em]" style={{ color: "var(--text-muted)" }}>
+                {pdf_pages} {pdf_pages === 1 ? "página" : "páginas"}
+              </span>
+            )}
+          </div>
         </div>
       )}
       {content && (
@@ -399,17 +417,18 @@ function App() {
     } catch (e) { console.error(e); }
   }
 
-  function onFilePick(e) {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-selecting same file
+  function processFile(file) {
     if (!file) return;
     setAttachError("");
-    const ALLOWED = ["image/jpeg", "image/png", "image/webp"];
-    if (!ALLOWED.includes(file.type)) {
+    const IMG_TYPES = ["image/jpeg", "image/png", "image/webp"];
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+    const isImg = IMG_TYPES.includes(file.type);
+    if (!isImg && !isPdf) {
       setAttachError(t.attach_bad_format);
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
+    const maxBytes = isPdf ? 10 * 1024 * 1024 : 5 * 1024 * 1024;
+    if (file.size > maxBytes) {
       setAttachError(t.attach_too_big);
       return;
     }
@@ -417,9 +436,33 @@ function App() {
     reader.onload = () => {
       const dataUrl = reader.result;
       const base64 = String(dataUrl).split(",")[1] || "";
-      setAttachment({ base64, mime: file.type, dataUrl, name: file.name });
+      if (isPdf) {
+        setAttachment({ kind: "pdf", base64, mime: "application/pdf", name: file.name || "document.pdf", sizeKb: Math.round(file.size / 1024) });
+      } else {
+        setAttachment({ kind: "image", base64, mime: file.type, dataUrl, name: file.name || "image" });
+      }
     };
     reader.readAsDataURL(file);
+  }
+
+  function onFilePick(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    processFile(file);
+  }
+
+  function onPaste(e) {
+    if (!e.clipboardData) return;
+    for (const item of e.clipboardData.items) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file && (file.type.startsWith("image/") || file.type === "application/pdf")) {
+          e.preventDefault();
+          processFile(file);
+          return;
+        }
+      }
+    }
   }
 
   async function sendMessage(textArg) {
@@ -430,7 +473,7 @@ function App() {
       sid = await newSession();
       if (!sid) return;
     }
-    const sentAttachment = attachment;
+    const sent = attachment;
     setInput("");
     setAttachment(null);
     setAttachError("");
@@ -443,17 +486,21 @@ function App() {
         session_id: sid,
         role: "user",
         content: text,
-        image_base64: sentAttachment?.base64 || null,
-        image_mime: sentAttachment?.mime || null,
+        image_base64: sent?.kind === "image" ? sent.base64 : null,
+        image_mime: sent?.kind === "image" ? sent.mime : null,
+        pdf_name: sent?.kind === "pdf" ? sent.name : null,
       },
     ]);
     try {
-      const { data } = await axios.post(`${API}/chat/sessions/${sid}/message`, {
-        content: text,
-        language: lang,
-        image_base64: sentAttachment?.base64 || null,
-        image_mime: sentAttachment?.mime || null,
-      });
+      const body = { content: text, language: lang };
+      if (sent?.kind === "image") {
+        body.image_base64 = sent.base64;
+        body.image_mime = sent.mime;
+      } else if (sent?.kind === "pdf") {
+        body.pdf_base64 = sent.base64;
+        body.pdf_name = sent.name;
+      }
+      const { data } = await axios.post(`${API}/chat/sessions/${sid}/message`, body);
       setMessages((m) => {
         const map = new Map(m.filter((x) => x.id !== tempId).map((x) => [x.id, x]));
         map.set(data.user_message.id, data.user_message);
@@ -599,7 +646,14 @@ function App() {
               <>
                 {messages.map((m) =>
                   m.role === "user" ? (
-                    <UserMessage key={m.id} content={m.content} image_base64={m.image_base64} image_mime={m.image_mime} />
+                    <UserMessage
+                      key={m.id}
+                      content={m.content}
+                      image_base64={m.image_base64}
+                      image_mime={m.image_mime}
+                      pdf_name={m.pdf_name}
+                      pdf_pages={m.pdf_pages}
+                    />
                   ) : (
                     <TutorMessage key={m.id} content={m.content} t={t} />
                   )
@@ -619,7 +673,7 @@ function App() {
           <div className="max-w-3xl mx-auto">
             {(attachment || attachError) && (
               <div className="mb-3 flex items-center gap-3" data-testid="attachment-preview-row">
-                {attachment && (
+                {attachment && attachment.kind === "image" && (
                   <div
                     className="relative inline-flex items-center gap-3 border p-2 pr-3"
                     style={{ background: "var(--surface)", borderColor: "var(--accent)" }}
@@ -652,6 +706,39 @@ function App() {
                     </button>
                   </div>
                 )}
+                {attachment && attachment.kind === "pdf" && (
+                  <div
+                    className="relative inline-flex items-center gap-3 border p-2 pr-3"
+                    style={{ background: "var(--surface)", borderColor: "var(--accent-cyan)" }}
+                    data-testid="attachment-preview"
+                  >
+                    <div
+                      className="w-12 h-12 flex items-center justify-center"
+                      style={{ border: "1px solid var(--border)", background: "var(--bg-deep)" }}
+                    >
+                      <FileText size={22} strokeWidth={1.5} style={{ color: "var(--accent-cyan)" }} />
+                    </div>
+                    <div className="flex flex-col leading-tight">
+                      <span className="text-xs font-mono uppercase tracking-[0.15em]" style={{ color: "var(--accent-cyan)" }}>
+                        PDF · {attachment.sizeKb} KB
+                      </span>
+                      <span className="text-xs max-w-[200px] truncate" style={{ color: "var(--text-secondary)" }}>
+                        {attachment.name}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setAttachment(null)}
+                      className="ml-2"
+                      aria-label={t.remove_attachment}
+                      data-testid="remove-attachment-btn"
+                      style={{ color: "var(--text-secondary)" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = "var(--error)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-secondary)")}
+                    >
+                      <X size={16} strokeWidth={2} />
+                    </button>
+                  </div>
+                )}
                 {attachError && (
                   <span
                     className="text-xs font-mono uppercase tracking-[0.15em]"
@@ -667,7 +754,7 @@ function App() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp"
+                accept="image/jpeg,image/png,image/webp,application/pdf,.pdf"
                 onChange={onFilePick}
                 className="hidden"
                 data-testid="file-input"
@@ -694,6 +781,7 @@ function App() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
+                onPaste={onPaste}
                 placeholder={t.placeholder}
                 rows={1}
                 className="flex-1 p-4 text-base font-body outline-none resize-none border transition-colors"

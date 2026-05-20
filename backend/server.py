@@ -11,6 +11,9 @@ import uuid
 from datetime import datetime, timezone
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+from pypdf import PdfReader
+import base64 as _b64
+import io
 
 
 ROOT_DIR = Path(__file__).parent
@@ -183,6 +186,8 @@ class Message(BaseModel):
     content: str
     image_base64: Optional[str] = None  # only stored on user messages with attachment
     image_mime: Optional[str] = None
+    pdf_name: Optional[str] = None
+    pdf_pages: Optional[int] = None
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -199,6 +204,8 @@ class SendMessageRequest(BaseModel):
     language: Optional[str] = "es"
     image_base64: Optional[str] = None  # raw base64 without data: prefix
     image_mime: Optional[str] = None    # e.g. "image/jpeg", "image/png", "image/webp"
+    pdf_base64: Optional[str] = None    # raw base64 PDF
+    pdf_name: Optional[str] = None
 
 
 class SendMessageResponse(BaseModel):
@@ -249,7 +256,7 @@ async def send_message(session_id: str, payload: SendMessageRequest):
         raise HTTPException(status_code=500, detail="LLM key no configurada")
 
     user_text = payload.content.strip()
-    if not user_text and not payload.image_base64:
+    if not user_text and not payload.image_base64 and not payload.pdf_base64:
         raise HTTPException(status_code=400, detail="Mensaje vacío")
 
     # Normalize image base64 (strip data URI prefix if present)
@@ -265,27 +272,65 @@ async def send_message(session_id: str, payload: SendMessageRequest):
             pass
     if img_b64 and not img_mime:
         img_mime = "image/jpeg"
-    # Validate mime
     if img_mime and img_mime not in ("image/jpeg", "image/png", "image/webp"):
         raise HTTPException(status_code=400, detail="Formato de imagen no soportado (usa JPEG, PNG o WEBP)")
 
-    # If only image (no text), inject a default question in the right language
-    if not user_text and img_b64:
+    # PDF: extract text content
+    pdf_text = ""
+    pdf_pages = None
+    pdf_name = payload.pdf_name
+    if payload.pdf_base64:
+        try:
+            pdf_b64 = payload.pdf_base64
+            if pdf_b64.startswith("data:"):
+                pdf_b64 = pdf_b64.split(",", 1)[1]
+            pdf_bytes = _b64.b64decode(pdf_b64)
+            if len(pdf_bytes) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="PDF demasiado grande (máx 10 MB)")
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            pdf_pages = len(reader.pages)
+            extracted = []
+            for i, page in enumerate(reader.pages[:50]):  # cap at 50 pages
+                try:
+                    extracted.append(f"[Página {i+1}]\n{page.extract_text() or ''}")
+                except Exception:
+                    pass
+            pdf_text = "\n\n".join(extracted).strip()
+            if len(pdf_text) > 60000:
+                pdf_text = pdf_text[:60000] + "\n\n[...contenido truncado...]"
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"No se pudo leer el PDF: {str(e)}")
+
+    # If only attachment (no text), inject a default question in the right language
+    if not user_text and (img_b64 or pdf_text):
         default_q = {
-            "es": "Analiza esta imagen y guíame paso a paso para resolverla.",
-            "en": "Analyze this image and guide me step by step to solve it.",
-            "fr": "Analyse cette image et guide-moi étape par étape pour la résoudre.",
-            "pt": "Analise esta imagem e me guie passo a passo para resolvê-la.",
+            "es": "Analiza este material y guíame paso a paso para resolverlo o entenderlo.",
+            "en": "Analyze this material and guide me step by step to solve or understand it.",
+            "fr": "Analyse ce document et guide-moi étape par étape pour le résoudre ou le comprendre.",
+            "pt": "Analise este material e me guie passo a passo para resolvê-lo ou entendê-lo.",
         }
         user_text = default_q.get((payload.language or "es").lower(), default_q["es"])
 
-    # Persist user message first (with image if any)
+    # Compose the text sent to the model (include PDF content if present)
+    model_user_text = user_text
+    if pdf_text:
+        model_user_text = (
+            f"{user_text}\n\n---\nContenido del documento adjunto"
+            + (f" ({pdf_name})" if pdf_name else "")
+            + f" — {pdf_pages or '?'} páginas:\n\n{pdf_text}"
+        )
+
+    # Persist user message first (with attachments metadata)
     user_msg = Message(
         session_id=session_id,
         role="user",
         content=user_text,
         image_base64=img_b64,
         image_mime=img_mime,
+        pdf_name=pdf_name if pdf_text else None,
+        pdf_pages=pdf_pages if pdf_text else None,
     )
     await db.messages.insert_one(user_msg.model_dump())
 
@@ -318,10 +363,10 @@ async def send_message(session_id: str, payload: SendMessageRequest):
         if img_b64:
             image_content = ImageContent(image_base64=img_b64)
             response_text = await chat.send_message(
-                UserMessage(text=user_text, file_contents=[image_content])
+                UserMessage(text=model_user_text, file_contents=[image_content])
             )
         else:
-            response_text = await chat.send_message(UserMessage(text=user_text))
+            response_text = await chat.send_message(UserMessage(text=model_user_text))
     except Exception as e:
         logger.exception("LLM error")
         raise HTTPException(status_code=500, detail=f"Error del modelo: {str(e)}")
