@@ -14,6 +14,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 from pypdf import PdfReader
 import base64 as _b64
 import io
+import asyncio
 
 
 ROOT_DIR = Path(__file__).parent
@@ -296,8 +297,8 @@ async def send_message(session_id: str, payload: SendMessageRequest):
                 except Exception:
                     pass
             pdf_text = "\n\n".join(extracted).strip()
-            if len(pdf_text) > 60000:
-                pdf_text = pdf_text[:60000] + "\n\n[...contenido truncado...]"
+            if len(pdf_text) > 20000:
+                pdf_text = pdf_text[:20000] + "\n\n[...contenido truncado para mantener la conversación eficiente...]"
         except HTTPException:
             raise
         except Exception as e:
@@ -334,24 +335,34 @@ async def send_message(session_id: str, payload: SendMessageRequest):
     )
     await db.messages.insert_one(user_msg.model_dump())
 
-    # Build chat with prior history. emergentintegrations' LlmChat tracks history per session_id internally,
-    # but to make state persistent we rebuild and replay history each call by sending the most recent user msg.
-    # We'll feed prior user/assistant messages by sending them again is not ideal; instead we use a stable
-    # session_id keyed cache: a fresh LlmChat per request, replay previous user messages via combined context.
-    history_msgs = await db.messages.find({"session_id": session_id}, {"_id": 0}).sort("timestamp", 1).to_list(2000)
+    # Build chat with prior history using a sliding window to keep token usage bounded.
+    # This enables effectively "infinite" conversations: only the last N turns are replayed.
+    HISTORY_TURNS = 20  # last 20 user + 20 assistant messages
+    MAX_MSG_CHARS = 2000  # truncate any single past message body to this many chars
+    history_msgs = (
+        await db.messages.find({"session_id": session_id}, {"_id": 0})
+        .sort("timestamp", -1)
+        .to_list(HISTORY_TURNS * 2 + 2)
+    )
+    history_msgs.reverse()  # chronological order
 
-    # Build a context block: include past turns as part of system prompt extension
     history_text_parts = []
-    for m in history_msgs[:-1]:  # exclude the just-saved user message (we'll send it as the user msg)
-        if m["role"] == "user":
-            history_text_parts.append(f"[Usuario anterior]: {m['content']}")
-        else:
-            history_text_parts.append(f"[Tutor anterior]: {m['content']}")
+    for m in history_msgs[:-1]:  # exclude the just-saved user message
+        body = (m.get("content") or "").strip()
+        if len(body) > MAX_MSG_CHARS:
+            body = body[:MAX_MSG_CHARS] + " …[truncado]"
+        tag = "[Usuario]" if m["role"] == "user" else "[Tutor]"
+        # Indicate if there was an attachment so the model has context but without re-sending data
+        if m.get("image_base64"):
+            tag += " (imagen adjunta)"
+        if m.get("pdf_name"):
+            tag += f" (PDF: {m['pdf_name']})"
+        history_text_parts.append(f"{tag}: {body}")
     history_block = "\n\n".join(history_text_parts)
 
     system_message = PROMPTS_BY_LANG.get((payload.language or "es").lower(), PROMPT_ES)
     if history_block:
-        system_message = system_message + "\n\nHistorial / Conversation history:\n" + history_block
+        system_message = system_message + "\n\nHistorial reciente / Recent history:\n" + history_block
 
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
@@ -359,17 +370,46 @@ async def send_message(session_id: str, payload: SendMessageRequest):
         system_message=system_message,
     ).with_model("anthropic", "claude-sonnet-4-5-20250929")
 
-    try:
+    # Send with one automatic retry for transient errors
+    async def _do_send():
         if img_b64:
-            image_content = ImageContent(image_base64=img_b64)
-            response_text = await chat.send_message(
-                UserMessage(text=model_user_text, file_contents=[image_content])
+            return await chat.send_message(
+                UserMessage(text=model_user_text, file_contents=[ImageContent(image_base64=img_b64)])
             )
-        else:
-            response_text = await chat.send_message(UserMessage(text=model_user_text))
-    except Exception as e:
-        logger.exception("LLM error")
-        raise HTTPException(status_code=500, detail=f"Error del modelo: {str(e)}")
+        return await chat.send_message(UserMessage(text=model_user_text))
+
+    response_text = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            response_text = await _do_send()
+            break
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            # Classify error → return a friendly HTTP status the frontend can interpret
+            if "budget" in err_str or "exceeded" in err_str or "insufficient" in err_str:
+                logger.warning(f"LLM budget exceeded: {e}")
+                raise HTTPException(
+                    status_code=402,  # Payment Required
+                    detail="BUDGET_EXCEEDED",
+                )
+            if "rate" in err_str and "limit" in err_str:
+                if attempt == 0:
+                    await asyncio.sleep(2)
+                    continue
+                raise HTTPException(status_code=429, detail="RATE_LIMIT")
+            if "context" in err_str and ("length" in err_str or "window" in err_str or "tokens" in err_str):
+                raise HTTPException(status_code=413, detail="CONTEXT_TOO_LONG")
+            # Network / transient → retry once
+            if attempt == 0:
+                await asyncio.sleep(1)
+                continue
+            logger.exception("LLM error")
+            raise HTTPException(status_code=502, detail="LLM_ERROR")
+
+    if response_text is None:
+        raise HTTPException(status_code=502, detail="LLM_ERROR")
 
     assistant_msg = Message(session_id=session_id, role="assistant", content=str(response_text))
     await db.messages.insert_one(assistant_msg.model_dump())

@@ -32,6 +32,10 @@ const I18N = {
     hero_desc: "No te entrego el resultado. Te entrego los datos, una sola acción y una pregunta. Aprendes haciendo el siguiente paso.",
     start_with: "Inicia con un ejemplo",
     error_msg: "Error: no se pudo obtener respuesta del modelo.",
+    err_budget: "Saldo agotado de la Universal Key. Ve a tu perfil → Universal Key → Add Balance para recargar.",
+    err_rate: "Demasiadas peticiones seguidas. Espera unos segundos e intenta de nuevo.",
+    err_context: "La conversación es muy larga. Inicia una nueva sesión para continuar.",
+    err_network: "Error de conexión con el modelo. Reintenta en un momento.",
     section_archivo: "Archivo de Datos",
     section_paso: "Paso Activo",
     section_cierre: "Acción de Cierre",
@@ -60,6 +64,10 @@ const I18N = {
     hero_desc: "I won't hand you the result. I give you the data, one single action and one question. You learn by taking the next step.",
     start_with: "Start with an example",
     error_msg: "Error: could not get a response from the model.",
+    err_budget: "Universal Key out of balance. Go to Profile → Universal Key → Add Balance to top up.",
+    err_rate: "Too many requests in a row. Wait a few seconds and try again.",
+    err_context: "Conversation is too long. Start a new session to continue.",
+    err_network: "Connection error with the model. Retry in a moment.",
     section_archivo: "Data File",
     section_paso: "Active Step",
     section_cierre: "Closing Action",
@@ -88,6 +96,10 @@ const I18N = {
     hero_desc: "Je ne te donne pas le résultat. Je te donne les données, une seule action et une question. Tu apprends en faisant le pas suivant.",
     start_with: "Commence par un exemple",
     error_msg: "Erreur : impossible d'obtenir une réponse du modèle.",
+    err_budget: "Solde épuisé de la Universal Key. Va dans Profil → Universal Key → Add Balance pour recharger.",
+    err_rate: "Trop de requêtes. Attends quelques secondes et réessaie.",
+    err_context: "La conversation est trop longue. Commence une nouvelle session.",
+    err_network: "Erreur de connexion avec le modèle. Réessaie dans un instant.",
     section_archivo: "Fichier de Données",
     section_paso: "Étape Active",
     section_cierre: "Action de Clôture",
@@ -513,9 +525,16 @@ function App() {
       });
     } catch (e) {
       console.error(e);
+      const status = e?.response?.status;
+      const code = e?.response?.data?.detail;
+      let errText = t.error_msg;
+      if (status === 402 || code === "BUDGET_EXCEEDED") errText = t.err_budget;
+      else if (status === 429 || code === "RATE_LIMIT") errText = t.err_rate;
+      else if (status === 413 || code === "CONTEXT_TOO_LONG") errText = t.err_context;
+      else if (status === 502 || code === "LLM_ERROR" || !status) errText = t.err_network;
       setMessages((m) => [
         ...m,
-        { id: "err-" + Date.now(), session_id: sid, role: "assistant", content: t.error_msg },
+        { id: "err-" + Date.now(), session_id: sid, role: "assistant", content: errText },
       ]);
     } finally {
       setSending(false);
