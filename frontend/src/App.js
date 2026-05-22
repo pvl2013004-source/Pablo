@@ -10,6 +10,14 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 const LOGO_SRC = "/syvren-logo.jpeg";
 
+// Axios instance with a generous timeout so a sleeping Render backend (cold start ~30s)
+// or a long Claude response doesn't fail prematurely.
+const api = axios.create({
+  baseURL: API,
+  timeout: 90000,
+  headers: { "Content-Type": "application/json" },
+});
+
 const LANGS = [
   { code: "es", label: "Español", short: "ES" },
   { code: "en", label: "English", short: "EN" },
@@ -371,6 +379,35 @@ const UserMessage = memo(UserMessageBase);
 
 
 function App() {
+  // Hard guard: if backend URL is not configured, show a setup screen instead of failing silently.
+  if (!BACKEND_URL) {
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center p-8"
+        style={{ background: "var(--bg)", color: "var(--text-primary)" }}
+      >
+        <div className="max-w-lg border p-8" style={{ borderColor: "var(--accent)", background: "var(--surface)" }}>
+          <div className="font-mono text-[10px] uppercase tracking-[0.3em]" style={{ color: "var(--accent-cyan)" }}>
+            Configuración pendiente
+          </div>
+          <h2 className="font-heading font-black text-2xl mt-3">Backend no conectado</h2>
+          <p className="mt-4 text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+            Define la variable de entorno <code style={{ color: "var(--accent-cyan)" }}>REACT_APP_BACKEND_URL</code> en
+            tu panel de Vercel apuntando a la URL pública de tu backend (por ejemplo
+            <br /><code style={{ color: "var(--accent-cyan)" }}>https://syvren-backend.onrender.com</code>) y vuelve a desplegar.
+          </p>
+          <p className="mt-4 text-xs font-mono uppercase tracking-[0.15em]" style={{ color: "var(--text-muted)" }}>
+            Vercel → Settings → Environment Variables
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return <AppInner />;
+}
+
+function AppInner() {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -384,7 +421,12 @@ function App() {
   const fileInputRef = useRef(null);
   const t = I18N[lang] || I18N.es;
 
-  useEffect(() => { fetchSessions(); }, []);
+  useEffect(() => {
+    // Wake up the backend (Render free tier sleeps after 15min) on mount, then load sessions.
+    // The ping is fire-and-forget; the real fetch may also wake it up.
+    api.get("/").catch(() => {});
+    fetchSessions();
+  }, []);
   useEffect(() => { localStorage.setItem("syvren_lang", lang); }, [lang]);
 
   useEffect(() => {
@@ -398,21 +440,21 @@ function App() {
 
   async function fetchSessions() {
     try {
-      const { data } = await axios.get(`${API}/chat/sessions`);
+      const { data } = await api.get("/chat/sessions");
       setSessions(data);
     } catch (e) { console.error(e); }
   }
 
   async function fetchMessages(sid) {
     try {
-      const { data } = await axios.get(`${API}/chat/sessions/${sid}/messages`);
+      const { data } = await api.get(`/chat/sessions/${sid}/messages`);
       setMessages(data);
     } catch (e) { console.error(e); }
   }
 
   async function newSession() {
     try {
-      const { data } = await axios.post(`${API}/chat/sessions`);
+      const { data } = await api.post("/chat/sessions");
       setSessions((s) => [data, ...s]);
       setActiveSessionId(data.id);
       setMessages([]);
@@ -424,7 +466,7 @@ function App() {
   async function deleteSession(id, e) {
     e.stopPropagation();
     try {
-      await axios.delete(`${API}/chat/sessions/${id}`);
+      await api.delete(`/chat/sessions/${id}`);
       setSessions((s) => s.filter((x) => x.id !== id));
       if (activeSessionId === id) {
         setActiveSessionId(null);
@@ -531,10 +573,12 @@ function App() {
       console.error(e);
       const status = e?.response?.status;
       const code = e?.response?.data?.detail;
+      const isTimeout = e?.code === "ECONNABORTED" || /timeout/i.test(e?.message || "");
       let errText = t.error_msg;
       if (status === 402 || code === "BUDGET_EXCEEDED") errText = t.err_budget;
       else if (status === 429 || code === "RATE_LIMIT") errText = t.err_rate;
       else if (status === 413 || code === "CONTEXT_TOO_LONG") errText = t.err_context;
+      else if (isTimeout) errText = t.err_network;
       else if (status === 502 || code === "LLM_ERROR" || !status) errText = t.err_network;
       setMessages((m) => [
         ...m,

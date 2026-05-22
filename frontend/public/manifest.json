@@ -1,0 +1,15 @@
+{
+  "short_name": "SYVREN",
+  "name": "SYVREN — Tutor Metodológico",
+  "icons": [
+    {
+      "src": "syvren-logo.jpeg",
+      "type": "image/jpeg",
+      "sizes": "256x256"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#050B1F",
+  "background_color": "#050B1F"
+}
