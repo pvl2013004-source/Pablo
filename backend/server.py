@@ -333,28 +333,24 @@ async def send_message(session_id: str, payload: SendMessageRequest):
         pdf_name=pdf_name if pdf_text else None,
         pdf_pages=pdf_pages if pdf_text else None,
     )
-    await db.messages.insert_one(user_msg.model_dump())
-
-    # Build chat with prior history using a sliding window to keep token usage bounded.
-    # This enables effectively "infinite" conversations: only the last N turns are replayed.
-    HISTORY_TURNS = 20  # last 20 user + 20 assistant messages
-    MAX_MSG_CHARS = 2000  # truncate any single past message body to this many chars
-    history_msgs = (
-        await db.messages.find({"session_id": session_id}, {"_id": 0})
+    # Persist user message AND fetch history in parallel (saves ~50-100ms)
+    insert_user_task = db.messages.insert_one(user_msg.model_dump())
+    HISTORY_TURNS = 20
+    MAX_MSG_CHARS = 2000
+    fetch_history_task = (
+        db.messages.find({"session_id": session_id}, {"_id": 0, "image_base64": 0})
         .sort("timestamp", -1)
-        .to_list(HISTORY_TURNS * 2 + 2)
+        .to_list(HISTORY_TURNS * 2)
     )
+    _, history_msgs = await asyncio.gather(insert_user_task, fetch_history_task)
     history_msgs.reverse()  # chronological order
 
     history_text_parts = []
-    for m in history_msgs[:-1]:  # exclude the just-saved user message
+    for m in history_msgs:
         body = (m.get("content") or "").strip()
         if len(body) > MAX_MSG_CHARS:
             body = body[:MAX_MSG_CHARS] + " …[truncado]"
         tag = "[Usuario]" if m["role"] == "user" else "[Tutor]"
-        # Indicate if there was an attachment so the model has context but without re-sending data
-        if m.get("image_base64"):
-            tag += " (imagen adjunta)"
         if m.get("pdf_name"):
             tag += f" (PDF: {m['pdf_name']})"
         history_text_parts.append(f"{tag}: {body}")
@@ -412,18 +408,22 @@ async def send_message(session_id: str, payload: SendMessageRequest):
         raise HTTPException(status_code=502, detail="LLM_ERROR")
 
     assistant_msg = Message(session_id=session_id, role="assistant", content=str(response_text))
-    await db.messages.insert_one(assistant_msg.model_dump())
 
-    # Update session: title from first user msg, and updated_at
+    # Persist assistant + update session in parallel (saves ~50-100ms)
     new_title = session.get("title", "Nueva sesión")
     if new_title == "Nueva sesión":
         new_title = user_text[:60] + ("…" if len(user_text) > 60 else "")
     now = datetime.now(timezone.utc).isoformat()
-    await db.sessions.update_one(
-        {"id": session_id},
-        {"$set": {"title": new_title, "updated_at": now}},
+    await asyncio.gather(
+        db.messages.insert_one(assistant_msg.model_dump()),
+        db.sessions.update_one(
+            {"id": session_id},
+            {"$set": {"title": new_title, "updated_at": now}},
+        ),
     )
-    updated_session = await db.sessions.find_one({"id": session_id}, {"_id": 0})
+
+    # Build updated session dict locally instead of round-tripping to MongoDB
+    updated_session = {**session, "title": new_title, "updated_at": now}
 
     return SendMessageResponse(
         user_message=user_msg,
@@ -436,10 +436,11 @@ app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
+    allow_credentials=False,  # using "*" origins requires credentials=False
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=86400,  # cache CORS preflight for 24h → reduces lag
 )
 
 logging.basicConfig(

@@ -1,0 +1,22 @@
+# Render deployment configuration for SYVREN backend
+# Free tier: deploy at https://render.com → New Web Service → connect this repo → root dir: backend
+services:
+  - type: web
+    name: syvren-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/
+    envVars:
+      - key: MONGO_URL
+        sync: false  # set manually in Render dashboard (MongoDB Atlas URI)
+      - key: DB_NAME
+        value: syvren
+      - key: EMERGENT_LLM_KEY
+        sync: false  # paste your key in Render dashboard
+      - key: CORS_ORIGINS
+        sync: false  # set to your Vercel URL e.g. https://syvren3.vercel.app
+      - key: PYTHON_VERSION
+        value: "3.11.10"

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import "@/App.css";
 import axios from "axios";
 import ReactMarkdown from "react-markdown";
@@ -246,7 +246,7 @@ function LoadingDots() {
   );
 }
 
-function TutorMessage({ content, t }) {
+function TutorMessageBase({ content, t }) {
   const sections = parseSections(content);
   return (
     <div className="mb-12 flex flex-col gap-4" data-testid="tutor-message">
@@ -323,7 +323,7 @@ function parseSections(text) {
   return out;
 }
 
-function UserMessage({ content, image_base64, image_mime, pdf_name, pdf_pages }) {
+function UserMessageBase({ content, image_base64, image_mime, pdf_name, pdf_pages }) {
   return (
     <div className="mb-12 flex flex-col items-end" data-testid="user-message">
       {image_base64 && (
@@ -365,6 +365,10 @@ function UserMessage({ content, image_base64, image_mime, pdf_name, pdf_pages })
     </div>
   );
 }
+// Memoize message components so the entire message list doesn't re-render on every keystroke / state change
+const TutorMessage = memo(TutorMessageBase);
+const UserMessage = memo(UserMessageBase);
+
 
 function App() {
   const [sessions, setSessions] = useState([]);
