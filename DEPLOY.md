@@ -1,89 +1,120 @@
 # Deploy SYVREN — Tutor Metodológico
 
-Tu frontend ya está en Vercel (`syvren3.vercel.app`). Para que funcione necesitas el **backend desplegado** + **MongoDB en la nube** + **variable de entorno** en Vercel apuntando al backend.
+Tu frontend ya está en Vercel. Para que funcione necesitas: **backend en Render** + **MongoDB Atlas** + **variable de entorno en Vercel**.
+
+---
+
+## ⚠️ IMPORTANTE — Razón por la que falla el deploy
+
+El paquete `emergentintegrations` **NO está en PyPI**. Está en una CDN privada.
+Por eso `pip install -r requirements.txt` falla en cualquier hosting estándar.
+
+La solución (ya configurada en `render.yaml`, `Procfile` y `pip.conf`):
+
+```
+pip install -r requirements.txt --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+```
+
+Render usa automáticamente el `buildCommand` de `render.yaml`, así que si despliegas con "Blueprint" no tienes que hacer nada manual.
 
 ---
 
 ## 1. MongoDB Atlas (gratis, 512 MB)
 
-1. Entra a https://cloud.mongodb.com → crea cuenta gratis
-2. Create cluster → tier **M0 (Free)** → región más cercana a ti
-3. Database Access → Add user → guarda usuario y contraseña
-4. Network Access → Add IP → `0.0.0.0/0` (permitir desde cualquier IP)
-5. Connect → Drivers → copia la **connection string**, algo como:
+1. https://cloud.mongodb.com → crea cuenta
+2. Build a Database → tier **M0 (Free)** → región cercana
+3. Database Access → Add User → guarda usuario y contraseña
+4. Network Access → Add IP → `0.0.0.0/0`
+5. Connect → Drivers → copia la connection string:
    ```
    mongodb+srv://USER:PASS@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
    ```
 
 ---
 
-## 2. Backend en Render (gratis, plan starter)
+## 2. Backend en Render (gratis)
 
-1. Entra a https://render.com → New + → **Web Service**
-2. Conecta tu repo de GitHub (haz "Save to GitHub" desde el chat de Emergent primero)
-3. Configuración:
-   - **Root directory:** `backend`
-   - **Build Command:** `pip install -r requirements.txt`
-   - **Start Command:** `uvicorn server:app --host 0.0.0.0 --port $PORT`
-   - **Instance type:** Free
-4. **Variables de entorno** (Advanced → Add Environment Variable):
-   - `MONGO_URL` = la connection string de Atlas
-   - `DB_NAME` = `syvren`
-   - `EMERGENT_LLM_KEY` = tu clave universal (la del .env actual)
+### Opción A — Blueprint (recomendado, 1 clic)
+1. https://render.com → New + → **Blueprint**
+2. Conecta tu repo de GitHub
+3. Render detecta `backend/render.yaml` automáticamente
+4. Pega los valores de las variables marcadas `sync: false`:
+   - `MONGO_URL` = connection string de Atlas
+   - `EMERGENT_LLM_KEY` = `sk-emergent-...` (la del .env actual)
    - `CORS_ORIGINS` = `https://syvren3.vercel.app` (tu URL exacta de Vercel)
-   - `PYTHON_VERSION` = `3.11.10`
-5. Create Web Service → espera 2-3 minutos
-6. Cuando termine, copia la URL que te dan (ej. `https://syvren-backend.onrender.com`)
-7. Verifica que funciona: abre `https://syvren-backend.onrender.com/api/` → debe responder JSON
+5. Apply → espera 3-5 minutos
 
-> ⚠️ **Render Free duerme tras 15 min sin uso.** La primera petición tarda ~30 s en despertar. Si quieres "always on" usa Railway ($5/mes) o Fly.io.
+### Opción B — Manual
+1. New + → **Web Service** → conecta repo
+2. Configuración:
+   - **Root directory:** `backend`
+   - **Build Command:**
+     ```
+     pip install --upgrade pip && pip install -r requirements.txt --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+     ```
+   - **Start Command:** `uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1`
+   - **Instance:** Free
+3. Environment Variables: mismas 4 + `PYTHON_VERSION=3.11.10`
+4. Create Web Service
+
+### Verifica
+Cuando termine, abre `https://tu-app.onrender.com/api/` → debe responder JSON:
+```json
+{"message": "Tutor Metodológico API"}
+```
+
+> ⚠️ **Render Free duerme tras 15 min sin uso** y tarda ~30s en despertar. La app ya tiene un **wake-up ping** al cargar para minimizar la espera.
 
 ---
 
 ## 3. Vercel — apuntar al backend
 
-1. Entra a tu proyecto en Vercel → Settings → Environment Variables
+1. Vercel → tu proyecto → Settings → Environment Variables
 2. Añade:
    - **Key:** `REACT_APP_BACKEND_URL`
    - **Value:** la URL de Render sin slash final (ej. `https://syvren-backend.onrender.com`)
-   - **Environments:** marca Production, Preview, Development
-3. Settings → Deployments → redeploy el último → Vercel re-construirá con la nueva variable
-4. Abre `syvren3.vercel.app` → ya debe conectarse al backend
+   - **Environments:** Production + Preview + Development
+3. Deployments → último deploy → **Redeploy**
+4. Abre `syvren3.vercel.app` → conectado ✅
 
 ---
 
-## 4. Verificación rápida
+## 4. Troubleshooting
 
-Si sigue dando "Error: no se pudo obtener respuesta del modelo":
-
-1. Abre la consola del navegador (F12) en la pestaña Network
-2. Envía un mensaje en SYVREN
-3. Mira la petición a `/api/chat/sessions/.../message`:
-   - **Status 0 / CORS error** → el backend `CORS_ORIGINS` no incluye tu URL de Vercel
-   - **Status 502** → backend caído o despertando (espera 30 s y reintenta)
-   - **Status 402** → saldo agotado en Universal Key → recarga
-   - **Status 404 sobre /api/...** → REACT_APP_BACKEND_URL incorrecta
+| Síntoma | Causa | Solución |
+|---------|-------|----------|
+| "Backend no conectado" | Falta `REACT_APP_BACKEND_URL` en Vercel | Añádela y redeploy |
+| Error 502 / Network | Backend dormido (cold start) | Espera 30 s y reintenta |
+| Error 402 / "Saldo agotado" | Universal Key sin saldo | Profile → Universal Key → Add Balance |
+| CORS error en consola | `CORS_ORIGINS` no incluye tu Vercel URL | Edita variable en Render |
+| Build falla con `emergentintegrations` | Falta `--extra-index-url` | Usa Blueprint (render.yaml ya lo tiene) |
 
 ---
 
-## Alternativas al backend en Render
+## 5. Alternativas al hosting de Render Free
 
 | Plataforma | Costo | Always-on | Setup |
 |------------|-------|-----------|-------|
-| **Render Free** | $0 | ❌ duerme 15min | Sí |
-| Railway | ~$5/mes | ✅ | Sí |
-| Fly.io | ~$3/mes | ✅ | Usa Dockerfile incluido |
-| Google Cloud Run | Pay-per-use (~$0-2/mes) | Cold start | Usa Dockerfile |
+| **Render Free** | $0 | ❌ duerme 15min | render.yaml |
+| Railway | ~$5/mes | ✅ | usa Dockerfile |
+| Fly.io | ~$3/mes | ✅ | usa Dockerfile |
+| Cloud Run | Pay-per-use | Cold start | usa Dockerfile |
 
-Para Fly.io / Cloud Run / Railway: usa el `Dockerfile` que ya está en `/app/backend/`.
+Para Railway / Fly.io / Cloud Run usa el `Dockerfile` que ya está en `/app/backend/` — ya incluye la `--extra-index-url`.
 
 ---
 
-## Optimizaciones de rendimiento aplicadas
+## 6. Optimizaciones aplicadas
 
-✅ Ventana deslizante de 20 turnos (en vez de historial infinito)
-✅ Escrituras a MongoDB paralelizadas con `asyncio.gather` (-100 ms/turno)
-✅ History fetch excluye `image_base64` (reduce ancho de banda 10-100×)
-✅ Sin re-fetch de sesión después del update (ahorra 1 query)
-✅ CORS preflight cacheado 24 h (`max_age=86400`)
-✅ Reintento automático ante errores transitorios
+✅ **Modelo Claude Haiku 4.5** (3-5× más rápido que Sonnet, ~5× más barato)
+✅ **Ventana deslizante de 10 turnos** (conversaciones infinitas, contexto bounded)
+✅ **Escrituras MongoDB en paralelo** (`asyncio.gather`)
+✅ **History excluye `image_base64`** (10-100× menos payload)
+✅ **CORS preflight cacheado 24 h**
+✅ **Wake-up ping al cargar la app** (despierta Render dormido proactivamente)
+✅ **Timeout cliente 90 s** (cubre cold start + respuesta larga)
+✅ **Reintento automático** ante errores transitorios
+✅ **Mensajes de error específicos** (saldo, rate-limit, contexto, red)
+✅ **Sin tracking de PostHog ni links a Emergent** en el HTML
+✅ **`React.memo`** en mensajes (sin re-render por tecleo)
+✅ **requirements.txt minimal** (9 paquetes vs 124 antes) → instala en ~45 s en Render

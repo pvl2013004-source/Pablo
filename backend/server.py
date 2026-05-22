@@ -335,15 +335,18 @@ async def send_message(session_id: str, payload: SendMessageRequest):
     )
     # Persist user message AND fetch history in parallel (saves ~50-100ms)
     insert_user_task = db.messages.insert_one(user_msg.model_dump())
-    HISTORY_TURNS = 20
-    MAX_MSG_CHARS = 2000
+    HISTORY_TURNS = 10  # last 10 user + 10 assistant messages (tight window → fast + cheap)
+    MAX_MSG_CHARS = 1200  # truncate any single past message body
     fetch_history_task = (
-        db.messages.find({"session_id": session_id}, {"_id": 0, "image_base64": 0})
+        db.messages.find(
+            {"session_id": session_id},
+            {"_id": 0, "image_base64": 0, "pdf_pages": 0, "timestamp": 0},
+        )
         .sort("timestamp", -1)
         .to_list(HISTORY_TURNS * 2)
     )
     _, history_msgs = await asyncio.gather(insert_user_task, fetch_history_task)
-    history_msgs.reverse()  # chronological order
+    history_msgs.reverse()
 
     history_text_parts = []
     for m in history_msgs:
@@ -364,7 +367,7 @@ async def send_message(session_id: str, payload: SendMessageRequest):
         api_key=EMERGENT_LLM_KEY,
         session_id=session_id,
         system_message=system_message,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+    ).with_model("anthropic", "claude-haiku-4-5-20251001")
 
     # Send with one automatic retry for transient errors
     async def _do_send():
