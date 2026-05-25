@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Plus, Send, Trash2, Menu, X, Globe, Check, Paperclip, FileText } from "lucide-react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -884,6 +885,7 @@ function AppInner() {
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-20 md:hidden" onClick={() => setSidebarOpen(false)} data-testid="sidebar-overlay" />
       )}
+      <SpeedInsights />
     </div>
   );
 }
