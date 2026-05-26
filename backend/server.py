@@ -297,8 +297,10 @@ async def send_message(session_id: str, payload: SendMessageRequest):
                 except Exception:
                     pass
             pdf_text = "\n\n".join(extracted).strip()
-            if len(pdf_text) > 20000:
-                pdf_text = pdf_text[:20000] + "\n\n[...contenido truncado para mantener la conversación eficiente...]"
+            MAX_PDF_CHARS = 12000
+
+if len(pdf_text) > MAX_PDF_CHARS:
+    pdf_text = pdf_text[:MAX_PDF_CHARS]+ "\n\n[...contenido truncado para mantener la conversación eficiente...]"
         except HTTPException:
             raise
         except Exception as e:
@@ -415,7 +417,8 @@ async def send_message(session_id: str, payload: SendMessageRequest):
     # Persist assistant + update session in parallel (saves ~50-100ms)
     new_title = session.get("title", "Nueva sesión")
     if new_title == "Nueva sesión":
-        new_title = user_text[:60] + ("…" if len(user_text) > 60 else "")
+        clean_title = " ".join(user_text.split())
+new_title = clean_title[:60] + ("…" if len(user_text) > 60 else "")
     now = datetime.now(timezone.utc).isoformat()
     await asyncio.gather(
         db.messages.insert_one(assistant_msg.model_dump()),
@@ -451,7 +454,10 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
+@app.on_event("startup")
+async def startup_db():
+    await db.messages.create_index([("session_id", 1), ("timestamp", -1)])
+    await db.sessions.create_index("updated_at")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
