@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, memo } from "react";
+import { useEffect, useRef, useState, memo, useCallback } from "react";
 import "@/App.css";
 import axios from "axios";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Plus, Send, Trash2, Menu, X, Globe, Check, Paperclip, FileText } from "lucide-react";
+import { Plus, Send, Trash2, Menu, X, Globe, Check, Paperclip, FileText, LogOut, LogIn } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -15,7 +15,15 @@ const LOGO_SRC = "/syvren-logo.jpeg";
 const api = axios.create({
   baseURL: API,
   timeout: 90000,
+  withCredentials: true, // send/receive httpOnly session_token cookie
   headers: { "Content-Type": "application/json" },
+});
+
+// Inject Authorization header from localStorage (fallback when cookies are cross-origin-blocked).
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("syvren_session_token");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
 });
 
 const LANGS = [
@@ -393,21 +401,147 @@ function App() {
           <h2 className="font-heading font-black text-2xl mt-3">Backend no conectado</h2>
           <p className="mt-4 text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>
             Define la variable de entorno <code style={{ color: "var(--accent-cyan)" }}>REACT_APP_BACKEND_URL</code> en
-            tu panel de Vercel apuntando a la URL pública de tu backend (por ejemplo
-            <br /><code style={{ color: "var(--accent-cyan)" }}>https://syvren-backend.onrender.com</code>) y vuelve a desplegar.
-          </p>
-          <p className="mt-4 text-xs font-mono uppercase tracking-[0.15em]" style={{ color: "var(--text-muted)" }}>
-            Vercel → Settings → Environment Variables
+            tu panel de Vercel apuntando a la URL pública de tu backend.
           </p>
         </div>
       </div>
     );
   }
-
-  return <AppInner />;
+  return <AuthGate />;
 }
 
-function AppInner() {
+function AuthGate() {
+  // null = checking, false = unauthenticated, object = user
+  const [authState, setAuthState] = useState(null);
+  const [exchanging, setExchanging] = useState(false);
+  const exchangedRef = useRef(false);
+
+  // 1) If URL hash contains session_id (returning from Google OAuth), exchange it first.
+  useEffect(() => {
+    const hash = window.location.hash || "";
+    const match = hash.match(/session_id=([^&]+)/);
+    if (match && !exchangedRef.current) {
+      exchangedRef.current = true;
+      setExchanging(true);
+      (async () => {
+        try {
+          const { data } = await api.post("/auth/google-session", { session_id: match[1] });
+          // Store the token as fallback for cross-origin where the cookie may be blocked
+          if (data.session_token) localStorage.setItem("syvren_session_token", data.session_token);
+          // Clean URL
+          window.history.replaceState(null, "", window.location.pathname + window.location.search);
+          setAuthState(data.user);
+        } catch (e) {
+          console.error("Auth exchange failed", e);
+          setAuthState(false);
+        } finally {
+          setExchanging(false);
+        }
+      })();
+      return;
+    }
+    // 2) Otherwise, ask /auth/me using existing cookie or stored token.
+    (async () => {
+      try {
+        const token = localStorage.getItem("syvren_session_token");
+        const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+        const { data } = await api.get("/auth/me", { headers });
+        setAuthState(data);
+      } catch (e) {
+        setAuthState(false);
+      }
+    })();
+  }, []);
+
+  function startLogin() {
+    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    const redirectUrl = window.location.origin + "/";
+    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+  }
+
+  if (authState === null || exchanging) return <LoadingScreen />;
+  if (authState === false) return <LoginScreen onLogin={startLogin} />;
+  return <AppInner user={authState} onLogout={() => { localStorage.removeItem("syvren_session_token"); setAuthState(false); }} />;
+}
+
+function LoadingScreen() {
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center"
+      style={{
+        background: "radial-gradient(ellipse at center, rgba(30,64,175,0.15), transparent 50%), var(--bg)",
+        color: "var(--text-primary)",
+      }}
+    >
+      <div className="flex flex-col items-center gap-4">
+        <img src={LOGO_SRC} alt="Syvren" width={64} height={64} style={{ filter: "drop-shadow(0 0 16px rgba(59,130,246,0.5))" }} />
+        <LoadingDots />
+        <span className="font-mono text-[10px] uppercase tracking-[0.3em]" style={{ color: "var(--text-muted)" }}>
+          Verificando sesión
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen({ onLogin }) {
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{
+        background: "radial-gradient(ellipse at top left, rgba(30,64,175,0.20), transparent 55%), radial-gradient(ellipse at bottom right, rgba(34,211,238,0.08), transparent 50%), var(--bg)",
+        color: "var(--text-primary)",
+      }}
+      data-testid="login-screen"
+    >
+      <div className="max-w-md w-full">
+        <Brand size="lg" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.3em] mt-10 block" style={{ color: "var(--text-muted)" }}>
+          Sistema · Método activo · Sin respuestas finales
+        </span>
+        <h1
+          className="font-heading text-4xl sm:text-5xl font-black tracking-tight mt-4 leading-[1.05]"
+          style={{ color: "var(--text-primary)" }}
+        >
+          Inicia sesión<br />
+          <span style={{ background: "linear-gradient(135deg, #60A5FA 0%, #22D3EE 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+            para aprender.
+          </span>
+        </h1>
+        <p className="mt-6 text-base leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+          Tus conversaciones y tu progreso quedan guardados de forma privada en tu cuenta.
+        </p>
+
+        <button
+          onClick={onLogin}
+          className="mt-10 w-full flex items-center justify-center gap-3 py-4 font-bold transition-all"
+          style={{
+            background: "linear-gradient(135deg, var(--accent) 0%, var(--accent-cyan) 100%)",
+            color: "#031024",
+            boxShadow: "0 0 0 1px rgba(59,130,246,0.3), 0 8px 32px -8px rgba(59,130,246,0.55)",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.1)")}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "brightness(1)")}
+          data-testid="google-login-button"
+        >
+          <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden>
+            <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6 8-11.3 8a12 12 0 1 1 7.9-21l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.3-.4-3.5z"/>
+            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16 18.9 13 24 13c3.1 0 5.9 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"/>
+            <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35 26.7 36 24 36c-5.2 0-9.6-3.3-11.2-8L6.2 33C9.4 39.5 16.1 44 24 44z"/>
+            <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.1 5.6l6.2 5.2C40.9 35.9 44 30.5 44 24c0-1.2-.1-2.3-.4-3.5z"/>
+          </svg>
+          <span className="font-mono uppercase text-xs tracking-[0.2em]">Continuar con Google</span>
+        </button>
+
+        <div className="mt-6 font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: "var(--text-muted)" }}>
+          Tus datos están cifrados · Cuenta privada por usuario
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AppInner({ user, onLogout }) {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -536,54 +670,93 @@ function AppInner() {
     setAttachment(null);
     setAttachError("");
     setSending(true);
-    const tempId = "tmp-" + Date.now();
+
+    // Optimistic user message + empty streaming assistant message
+    const tempUserId = "tmp-u-" + Date.now();
+    const streamId = "stream-" + Date.now();
     setMessages((m) => [
       ...m,
       {
-        id: tempId,
-        session_id: sid,
-        role: "user",
-        content: text,
+        id: tempUserId, session_id: sid, role: "user", content: text,
         image_base64: sent?.kind === "image" ? sent.base64 : null,
         image_mime: sent?.kind === "image" ? sent.mime : null,
         pdf_name: sent?.kind === "pdf" ? sent.name : null,
       },
+      { id: streamId, session_id: sid, role: "assistant", content: "" },
     ]);
+
+    const body = { content: text, language: lang };
+    if (sent?.kind === "image") { body.image_base64 = sent.base64; body.image_mime = sent.mime; }
+    else if (sent?.kind === "pdf") { body.pdf_base64 = sent.base64; body.pdf_name = sent.name; }
+
+    const token = localStorage.getItem("syvren_session_token");
+    let aborted = false;
     try {
-      const body = { content: text, language: lang };
-      if (sent?.kind === "image") {
-        body.image_base64 = sent.base64;
-        body.image_mime = sent.mime;
-      } else if (sent?.kind === "pdf") {
-        body.pdf_base64 = sent.base64;
-        body.pdf_name = sent.name;
+      const resp = await fetch(`${API}/chat/sessions/${sid}/stream`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const status = resp.status;
+        let errText = t.error_msg;
+        if (status === 402) errText = t.err_budget;
+        else if (status === 429) errText = t.err_rate;
+        else if (status === 413) errText = t.err_context;
+        else if (status === 401) errText = t.err_network;
+        else errText = t.err_network;
+        setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: errText } : x));
+        return;
       }
-      const { data } = await axios.post(`${API}/chat/sessions/${sid}/message`, body);
-      setMessages((m) => {
-        const map = new Map(m.filter((x) => x.id !== tempId).map((x) => [x.id, x]));
-        map.set(data.user_message.id, data.user_message);
-        map.set(data.assistant_message.id, data.assistant_message);
-        return Array.from(map.values());
-      });
-      setSessions((s) => {
-        const others = s.filter((x) => x.id !== data.session.id);
-        return [data.session, ...others];
-      });
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE: events separated by double newlines
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+        for (const evt of events) {
+          const line = evt.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          try {
+            const payload = JSON.parse(line.slice(5).trim());
+            if (payload.type === "chunk") {
+              setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: x.content + payload.text } : x));
+            } else if (payload.type === "user") {
+              // Replace optimistic user msg id with the real one from server
+              setMessages((m) => m.map((x) => x.id === tempUserId ? { ...payload.message } : x));
+            } else if (payload.type === "done") {
+              setMessages((m) => m.map((x) => x.id === streamId ? { ...payload.assistant } : x));
+              setSessions((s) => {
+                const others = s.filter((x) => x.id !== payload.session.id);
+                return [payload.session, ...others];
+              });
+            } else if (payload.type === "error") {
+              const code = payload.code;
+              let errText = t.error_msg;
+              if (code === "BUDGET_EXCEEDED") errText = t.err_budget;
+              else if (code === "RATE_LIMIT") errText = t.err_rate;
+              else if (code === "CONTEXT_TOO_LONG") errText = t.err_context;
+              else errText = t.err_network;
+              setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: errText } : x));
+            }
+          } catch (err) {
+            console.warn("SSE parse error", err, line);
+          }
+        }
+      }
     } catch (e) {
       console.error(e);
-      const status = e?.response?.status;
-      const code = e?.response?.data?.detail;
-      const isTimeout = e?.code === "ECONNABORTED" || /timeout/i.test(e?.message || "");
-      let errText = t.error_msg;
-      if (status === 402 || code === "BUDGET_EXCEEDED") errText = t.err_budget;
-      else if (status === 429 || code === "RATE_LIMIT") errText = t.err_rate;
-      else if (status === 413 || code === "CONTEXT_TOO_LONG") errText = t.err_context;
-      else if (isTimeout) errText = t.err_network;
-      else if (status === 502 || code === "LLM_ERROR" || !status) errText = t.err_network;
-      setMessages((m) => [
-        ...m,
-        { id: "err-" + Date.now(), session_id: sid, role: "assistant", content: errText },
-      ]);
+      if (!aborted) {
+        setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: t.err_network } : x));
+      }
     } finally {
       setSending(false);
     }
@@ -684,8 +857,44 @@ function AppInner() {
           })}
         </div>
 
-        <div className="p-4 border-t font-mono text-[10px] uppercase tracking-[0.2em]" style={{ borderColor: "var(--border)", color: "var(--text-muted)" }}>
-          {t.method_label}
+        <div className="p-3 border-t flex items-center gap-3" style={{ borderColor: "var(--border)" }} data-testid="user-bar">
+          <div
+            className="w-8 h-8 flex items-center justify-center font-mono text-xs font-bold uppercase"
+            style={{
+              background: "linear-gradient(135deg, var(--accent) 0%, var(--accent-cyan) 100%)",
+              color: "#031024",
+              borderRadius: "999px",
+              flexShrink: 0,
+              overflow: "hidden",
+            }}
+          >
+            {user?.picture ? (
+              <img src={user.picture} alt={user?.name} className="w-full h-full object-cover" />
+            ) : (
+              (user?.name || user?.email || "?").trim().charAt(0)
+            )}
+          </div>
+          <div className="flex flex-col leading-tight min-w-0 flex-1">
+            <span className="text-xs truncate" style={{ color: "var(--text-primary)" }}>{user?.name || user?.email}</span>
+            <span className="text-[10px] font-mono uppercase tracking-[0.15em] truncate" style={{ color: "var(--text-muted)" }}>
+              {t.method_label}
+            </span>
+          </div>
+          <button
+            onClick={async () => {
+              try { await api.post("/auth/logout"); } catch (_) {}
+              onLogout?.();
+            }}
+            className="p-2 transition-colors"
+            style={{ color: "var(--text-muted)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--error)")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-muted)")}
+            aria-label="Cerrar sesión"
+            title="Cerrar sesión"
+            data-testid="logout-button"
+          >
+            <LogOut size={16} strokeWidth={1.8} />
+          </button>
         </div>
       </aside>
 

@@ -1,0 +1,42 @@
+{
+  "summary": "Full retest of SYVREN auth + streaming. Backend: 15/15 pytest tests passed covering /api/auth/me (401 w/o token, 200 with Bearer, 401 invalid), /api/auth/google-session (rejects invalid session_id), /api/auth/logout (deletes DB session), /api/chat/sessions scoped per user (list/create/delete only-owner), cross-user 404 on GET messages, non-streaming send_message, and SSE /stream emitting `user` -> `chunk`s -> `done` (verified types order, content-type=text/event-stream, requires auth). MongoDB indexes verified: users.email unique, user_sessions.session_token unique, user_sessions.expires_at TTL (expireAfterSeconds=0). Frontend (Playwright via REACT_APP_BACKEND_URL): LoginScreen on first load with google-login-button, token-in-localStorage path enters AppInner with Demo Student user-bar + logout-button, send-button triggers SSE stream which renders user-message and tutor-message with all 3 sections (section-archivo-datos, section-paso-activo, section-accion-cierre), session-list scoped to demo user, logout returns to LoginScreen and clears localStorage.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Send message via /stream",
+        "issue": "Persistent React warning 'Encountered two children with the same key' for message UUID during streaming. Same root cause as iteration_1: race between optimistic placeholder + fetchMessages effect + final `done` event setMessages. Cosmetic — UI still renders correctly with all 3 tutor sections.",
+        "affected_selectors": ["[data-testid=\"user-message\"]", "[data-testid=\"tutor-message\"]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_syvren_auth.py",
+    "/app/test_reports/pytest/pytest_iter2.xml"
+  ],
+  "action_items": [
+    "Optional: dedupe by message id when merging optimistic + stream-final state in App.js sendMessage (silences React duplicate-key warning).",
+    "Heads-up: /api/auth/logout deletes the session row in MongoDB, so the dev backdoor token 'demo_token_123' gets removed every time the Playwright test clicks logout. After running auth E2E tests, re-seed the row (see /app/memory/test_credentials.md). I re-seeded it at end of this run.",
+    "Cleanup orphan 'Nueva sesión' rows under demo-user (currently ~15 from accumulated test runs) — not a bug, just hygiene."
+  ],
+  "critical_code_review_comments": [
+    "server.py:417 DELETE /api/chat/sessions/{id} always returns {ok:true} regardless of whether the session existed or was owned by the caller. From a UX perspective this is fine (idempotent) but it hides 404s for callers — consider returning 404 when result.deleted_count==0.",
+    "server.py:381 logout deletes the session row in DB but only clears the cookie; clients using Bearer in localStorage must clear it themselves (App.js does this — OK).",
+    "server.py:382 response.delete_cookie sets SameSite=none + Secure which requires the request to also originate from HTTPS; preview env is HTTPS so OK, but localhost dev (http) would silently fail to clear the cookie.",
+    "server.py:733 streaming endpoint raises HTTPException AFTER yielding starts only via plain `yield error event` — but pre-stream validations (auth, 400 empty, 404 session, 400 PDF) raise before event_gen runs, which correctly returns JSON 4xx — good.",
+    "server.py:419 delete_session does not require the message-deletion to be authorized again; OK because the WHERE clause is scoped to user_id, but the subsequent db.messages.delete_many runs only when deleted_count>0 — correct.",
+    "App.js: streaming sendMessage likely re-fetches messages from the server after `done`, causing duplicate-key warning observed in console (carryover from iter_1)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_syvren_auth.py"
+  ],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% (all listed flows verified end-to-end)"},
+  "test_credentials": "Dev backdoor: localStorage syvren_session_token = 'demo_token_123' (user_id=demo-user, email=demo@syvren.app). Re-seeded at end of this run.",
+  "seed_data_creation": "Created and torn down: 1 'other test user' with bearer token (for cross-user scoping tests). Created several chat sessions (some left behind under demo-user — minor hygiene).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests at /app/backend/tests/test_syvren_auth.py run in ~7s and pass 15/15. After running them, the 'other test user' is cleaned up but ~5 'Nueva sesión' rows may remain under demo-user. If the demo session token disappears from MongoDB (e.g., because the frontend logout flow was exercised), re-seed via: mongosh test_database --eval \"db.user_sessions.insertOne({user_id:'demo-user',session_token:'demo_token_123',expires_at:new Date(Date.now()+7*24*60*60*1000),created_at:new Date()})\". The SSE stream format is: each event is 'data: {json}\\n\\n' with type ∈ {'user','chunk','done','error'}; verified content-type=text/event-stream.",
+  "rca_of_the_issue": "N/A — no failures. Only carry-over React duplicate-key warning from iter_1 (cosmetic)."
+}

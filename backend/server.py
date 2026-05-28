@@ -1,10 +1,13 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Cookie, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict
 from pypdf import PdfReader
 import litellm
+import httpx
+import json
 import os
 import io
 import uuid
@@ -13,7 +16,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 ROOT_DIR = Path(__file__).parent
@@ -23,7 +26,12 @@ load_dotenv(ROOT_DIR / '.env')
 MONGO_URL = os.environ.get('MONGO_URL', '')
 DB_NAME = os.environ.get('DB_NAME', 'syvren')
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
-CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()]
+CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',') if o.strip()]
+# Cookies need explicit allowed credential origins (no wildcard).
+COOKIE_ORIGINS = [o for o in CORS_ORIGINS if o != '*']
+
+EMERGENT_AUTH_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+SESSION_DAYS = 7
 
 # Emergent Universal Key talks to this OpenAI-compatible proxy.
 EMERGENT_PROXY_URL = 'https://integrations.emergentagent.com/llm'
@@ -192,6 +200,14 @@ TUTOR_SYSTEM_PROMPT = PROMPT_ES
 
 
 # --- Models ---
+class User(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    user_id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+
+
 class Message(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -208,6 +224,7 @@ class Message(BaseModel):
 class Session(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
     title: str = "Nueva sesión"
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -228,41 +245,186 @@ class SendMessageResponse(BaseModel):
     session: Session
 
 
+class GoogleSessionRequest(BaseModel):
+    session_id: str
+
+
+# --- Auth helper (cookie-first, then Authorization Bearer header) ---
+async def get_current_user(
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> User:
+    if db is None:
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+    token = session_token
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    session_doc = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session_doc:
+        raise HTTPException(status_code=401, detail="Sesión inválida")
+
+    expires_at = session_doc.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Sesión expirada")
+
+    user_doc = await db.users.find_one({"user_id": session_doc["user_id"]}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+    return User(**user_doc)
+
+
 # --- Routes ---
 @api_router.get("/")
 async def root():
     return {"message": "Tutor Metodológico API"}
 
 
+# --- Auth routes ---
+@api_router.post("/auth/google-session")
+async def auth_google_session(payload: GoogleSessionRequest, response: Response):
+    """
+    Exchange a one-time `session_id` (from Emergent Google Auth URL fragment) for a 7-day
+    `session_token`. Stores the user in MongoDB and sets the cookie.
+    """
+    if db is None:
+        raise HTTPException(status_code=503, detail="Base de datos no disponible")
+
+    # Call Emergent Auth backend (NEVER do this from the frontend)
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            r = await http.get(
+                EMERGENT_AUTH_SESSION_URL,
+                headers={"X-Session-ID": payload.session_id},
+            )
+        if r.status_code != 200:
+            raise HTTPException(status_code=401, detail="Sesión Google inválida")
+        data = r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Emergent auth error")
+        raise HTTPException(status_code=502, detail=f"Auth proxy error: {e}")
+
+    email = data.get("email")
+    name = data.get("name") or email
+    picture = data.get("picture")
+    session_token = data.get("session_token")
+    if not email or not session_token:
+        raise HTTPException(status_code=502, detail="Respuesta auth incompleta")
+
+    # Upsert user (find by email — Google accounts are identified by email)
+    user_doc = await db.users.find_one({"email": email}, {"_id": 0})
+    if user_doc:
+        user_id = user_doc["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"name": name, "picture": picture, "last_login": datetime.now(timezone.utc)}},
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "picture": picture,
+            "created_at": datetime.now(timezone.utc),
+            "last_login": datetime.now(timezone.utc),
+        })
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)
+    await db.user_sessions.insert_one({
+        "user_id": user_id,
+        "session_token": session_token,
+        "expires_at": expires_at,
+        "created_at": datetime.now(timezone.utc),
+    })
+
+    # httpOnly cookie + Authorization fallback for cross-origin clients
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=SESSION_DAYS * 24 * 3600,
+        path="/",
+    )
+
+    return {
+        "user": {"user_id": user_id, "email": email, "name": name, "picture": picture},
+        "session_token": session_token,
+    }
+
+
+@api_router.get("/auth/me", response_model=User)
+async def auth_me(user: User = Depends(get_current_user)):
+    return user
+
+
+@api_router.post("/auth/logout")
+async def auth_logout(
+    response: Response,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    token = session_token
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if token and db is not None:
+        await db.user_sessions.delete_one({"session_token": token})
+    response.delete_cookie("session_token", path="/", samesite="none", secure=True)
+    return {"ok": True}
+
+
 @api_router.post("/chat/sessions", response_model=Session)
-async def create_session():
-    session = Session()
+async def create_session(user: User = Depends(get_current_user)):
+    session = Session(user_id=user.user_id)
     await db.sessions.insert_one(session.model_dump())
     return session
 
 
 @api_router.get("/chat/sessions", response_model=List[Session])
-async def list_sessions():
-    sessions = await db.sessions.find({}, {"_id": 0}).sort("updated_at", -1).to_list(500)
+async def list_sessions(user: User = Depends(get_current_user)):
+    sessions = (
+        await db.sessions.find({"user_id": user.user_id}, {"_id": 0})
+        .sort("updated_at", -1)
+        .to_list(500)
+    )
     return sessions
 
 
 @api_router.get("/chat/sessions/{session_id}/messages", response_model=List[Message])
-async def get_messages(session_id: str):
-    messages = await db.messages.find({"session_id": session_id}, {"_id": 0}).sort("timestamp", 1).to_list(2000)
+async def get_messages(session_id: str, user: User = Depends(get_current_user)):
+    # Verify ownership
+    sess = await db.sessions.find_one({"id": session_id, "user_id": user.user_id}, {"_id": 0})
+    if not sess:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    messages = (
+        await db.messages.find({"session_id": session_id}, {"_id": 0})
+        .sort("timestamp", 1)
+        .to_list(2000)
+    )
     return messages
 
 
 @api_router.delete("/chat/sessions/{session_id}")
-async def delete_session(session_id: str):
-    await db.sessions.delete_one({"id": session_id})
-    await db.messages.delete_many({"session_id": session_id})
+async def delete_session(session_id: str, user: User = Depends(get_current_user)):
+    result = await db.sessions.delete_one({"id": session_id, "user_id": user.user_id})
+    if result.deleted_count:
+        await db.messages.delete_many({"session_id": session_id})
     return {"ok": True}
 
 
 @api_router.post("/chat/sessions/{session_id}/message", response_model=SendMessageResponse)
-async def send_message(session_id: str, payload: SendMessageRequest):
-    session = await db.sessions.find_one({"id": session_id}, {"_id": 0})
+async def send_message(session_id: str, payload: SendMessageRequest, user: User = Depends(get_current_user)):
+    session = await db.sessions.find_one({"id": session_id, "user_id": user.user_id}, {"_id": 0})
     if not session:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
@@ -462,12 +624,179 @@ async def send_message(session_id: str, payload: SendMessageRequest):
     )
 
 
+# --- Streaming variant: emits SSE chunks while Claude generates ---
+@api_router.post("/chat/sessions/{session_id}/stream")
+async def stream_message(
+    session_id: str,
+    payload: SendMessageRequest,
+    user: User = Depends(get_current_user),
+):
+    session = await db.sessions.find_one({"id": session_id, "user_id": user.user_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="LLM key no configurada")
+
+    user_text = (payload.content or "").strip()
+    img_b64 = payload.image_base64
+    img_mime = payload.image_mime
+    if img_b64 and img_b64.startswith("data:"):
+        try:
+            header, b64data = img_b64.split(",", 1)
+            img_b64 = b64data
+            if not img_mime and "image/" in header:
+                img_mime = header.split(";")[0].replace("data:", "")
+        except Exception:
+            pass
+    if img_b64 and not img_mime:
+        img_mime = "image/jpeg"
+
+    if not user_text and not img_b64 and not payload.pdf_base64:
+        raise HTTPException(status_code=400, detail="Mensaje vacío")
+
+    # PDF extraction (same as send_message)
+    pdf_text = ""
+    pdf_pages = None
+    pdf_name = payload.pdf_name
+    if payload.pdf_base64:
+        try:
+            pdf_b64 = payload.pdf_base64.split(",", 1)[-1] if payload.pdf_base64.startswith("data:") else payload.pdf_base64
+            pdf_bytes = _b64.b64decode(pdf_b64)
+            if len(pdf_bytes) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="PDF demasiado grande (máx 10 MB)")
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            pdf_pages = len(reader.pages)
+            extracted = [f"[Página {i+1}]\n{p.extract_text() or ''}" for i, p in enumerate(reader.pages[:50])]
+            pdf_text = "\n\n".join(extracted).strip()
+            if len(pdf_text) > 12000:
+                pdf_text = pdf_text[:12000] + "\n\n[...truncado...]"
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"No se pudo leer el PDF: {e}")
+
+    if not user_text and (img_b64 or pdf_text):
+        defaults = {
+            "es": "Analiza este material y guíame paso a paso.",
+            "en": "Analyze this material and guide me step by step.",
+            "fr": "Analyse ce document et guide-moi étape par étape.",
+            "pt": "Analise este material e me guie passo a passo.",
+        }
+        user_text = defaults.get((payload.language or "es").lower(), defaults["es"])
+
+    model_user_text = user_text
+    if pdf_text:
+        model_user_text = f"{user_text}\n\n---\nContenido del documento{(' (' + pdf_name + ')') if pdf_name else ''} — {pdf_pages or '?'} páginas:\n\n{pdf_text}"
+
+    user_msg = Message(
+        session_id=session_id, role="user", content=user_text,
+        image_base64=img_b64, image_mime=img_mime,
+        pdf_name=pdf_name if pdf_text else None, pdf_pages=pdf_pages if pdf_text else None,
+    )
+
+    insert_user_task = db.messages.insert_one(user_msg.model_dump())
+    fetch_history_task = (
+        db.messages.find(
+            {"session_id": session_id},
+            {"_id": 0, "image_base64": 0, "pdf_pages": 0, "timestamp": 0},
+        ).sort("timestamp", -1).to_list(20)
+    )
+    _, history_msgs = await asyncio.gather(insert_user_task, fetch_history_task)
+    history_msgs.reverse()
+    parts = []
+    for m in history_msgs:
+        body = (m.get("content") or "").strip()
+        if len(body) > 1200:
+            body = body[:1200] + " …[truncado]"
+        tag = "[Usuario]" if m["role"] == "user" else "[Tutor]"
+        if m.get("pdf_name"):
+            tag += f" (PDF: {m['pdf_name']})"
+        parts.append(f"{tag}: {body}")
+    history_block = "\n\n".join(parts)
+
+    system_message = PROMPTS_BY_LANG.get((payload.language or "es").lower(), PROMPT_ES)
+    if history_block:
+        system_message = system_message + "\n\nHistorial reciente / Recent history:\n" + history_block
+
+    chat_messages = [{"role": "system", "content": system_message}]
+    if img_b64:
+        chat_messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": model_user_text},
+                {"type": "image_url", "image_url": {"url": f"data:{img_mime or 'image/jpeg'};base64,{img_b64}"}},
+            ],
+        })
+    else:
+        chat_messages.append({"role": "user", "content": model_user_text})
+
+    async def event_gen():
+        # Send the user-message metadata immediately so the client can render it
+        yield f"data: {json.dumps({'type': 'user', 'message': user_msg.model_dump()})}\n\n"
+
+        accumulated = ""
+        try:
+            resp = await litellm.acompletion(
+                model=MODEL_NAME,
+                messages=chat_messages,
+                api_key=EMERGENT_LLM_KEY,
+                api_base=EMERGENT_PROXY_URL,
+                custom_llm_provider="openai",
+                stream=True,
+                timeout=40,
+            )
+            async for chunk in resp:
+                try:
+                    delta = chunk.choices[0].delta
+                    text = getattr(delta, "content", None) or ""
+                except Exception:
+                    text = ""
+                if text:
+                    accumulated += text
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+        except Exception as e:
+            err_str = str(e).lower()
+            if "budget" in err_str or "exceeded" in err_str or "insufficient" in err_str:
+                yield f"data: {json.dumps({'type': 'error', 'code': 'BUDGET_EXCEEDED'})}\n\n"
+                return
+            yield f"data: {json.dumps({'type': 'error', 'code': 'LLM_ERROR', 'detail': str(e)[:200]})}\n\n"
+            return
+
+        if not accumulated:
+            yield f"data: {json.dumps({'type': 'error', 'code': 'EMPTY'})}\n\n"
+            return
+
+        assistant_msg = Message(session_id=session_id, role="assistant", content=accumulated)
+        new_title = session.get("title", "Nueva sesión")
+        if new_title == "Nueva sesión":
+            clean = " ".join(user_text.split())
+            new_title = clean[:60] + ("…" if len(clean) > 60 else "")
+        now = datetime.now(timezone.utc).isoformat()
+        await asyncio.gather(
+            db.messages.insert_one(assistant_msg.model_dump()),
+            db.sessions.update_one(
+                {"id": session_id, "user_id": user.user_id},
+                {"$set": {"title": new_title, "updated_at": now}},
+            ),
+        )
+        updated_session = {**session, "title": new_title, "updated_at": now}
+        yield f"data: {json.dumps({'type': 'done', 'assistant': assistant_msg.model_dump(), 'session': Session(**updated_session).model_dump()})}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=False,
-    allow_origins=CORS_ORIGINS,
+    # cookies require credentials=True + explicit origins (no wildcard)
+    allow_credentials=True,
+    allow_origins=COOKIE_ORIGINS if COOKIE_ORIGINS else CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
     max_age=86400,
@@ -482,6 +811,11 @@ async def startup_db():
     try:
         await db.messages.create_index([("session_id", 1), ("timestamp", -1)])
         await db.sessions.create_index("updated_at")
+        await db.sessions.create_index([("user_id", 1), ("updated_at", -1)])
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("user_id", unique=True)
+        await db.user_sessions.create_index("session_token", unique=True)
+        await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
         logger.info("MongoDB indexes ensured.")
     except Exception as e:
         logger.warning(f"Could not create indexes: {e}")
