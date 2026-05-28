@@ -1,33 +1,47 @@
 from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field, ConfigDict
+from pypdf import PdfReader
+import litellm
 import os
+import io
+import uuid
+import base64 as _b64
+import asyncio
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
-import uuid
 from datetime import datetime, timezone
-
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
-from pypdf import PdfReader
-import base64 as _b64
-import io
-import asyncio
 
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
-app = FastAPI()
-api_router = APIRouter()
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
+# Top-level config (must be importable by Vercel / uvicorn / gunicorn)
+MONGO_URL = os.environ.get('MONGO_URL', '')
+DB_NAME = os.environ.get('DB_NAME', 'syvren')
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()]
+
+# Emergent Universal Key talks to this OpenAI-compatible proxy.
+EMERGENT_PROXY_URL = 'https://integrations.emergentagent.com/llm'
+MODEL_NAME = 'claude-haiku-4-5-20251001'
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
+logger = logging.getLogger("syvren")
+
+# FastAPI app instance — defined at module top-level so Vercel / uvicorn / gunicorn can import it.
+app = FastAPI(title="SYVREN — Tutor Metodológico API")
+api_router = APIRouter(prefix="/api")
+
+# MongoDB (lazy-fail: if MONGO_URL is missing we still let FastAPI boot so /api/ replies)
+client: Optional[AsyncIOMotorClient] = AsyncIOMotorClient(MONGO_URL) if MONGO_URL else None
+db = client[DB_NAME] if client is not None else None
 
 # Tutor system prompts per language
 PROMPT_ES = """Rol: Eres un tutor de alta precisión. Tu objetivo es proporcionar datos y guiar el proceso paso a paso sin entregar nunca el resultado final.
@@ -176,9 +190,6 @@ PROMPTS_BY_LANG = {
 # Backward-compatible default
 TUTOR_SYSTEM_PROMPT = PROMPT_ES
 
-app = FastAPI()
-api_router = APIRouter(prefix="/api")
-
 
 # --- Models ---
 class Message(BaseModel):
@@ -300,9 +311,8 @@ async def send_message(session_id: str, payload: SendMessageRequest):
                     pass
             pdf_text = "\n\n".join(extracted).strip()
             MAX_PDF_CHARS = 12000
-
-if len(pdf_text) > MAX_PDF_CHARS:
-    pdf_text = pdf_text[:MAX_PDF_CHARS]+ "\n\n[...contenido truncado para mantener la conversación eficiente...]"
+            if len(pdf_text) > MAX_PDF_CHARS:
+                pdf_text = pdf_text[:MAX_PDF_CHARS] + "\n\n[...contenido truncado para mantener la conversación eficiente...]"
         except HTTPException:
             raise
         except Exception as e:
@@ -367,36 +377,49 @@ if len(pdf_text) > MAX_PDF_CHARS:
     if history_block:
         system_message = system_message + "\n\nHistorial reciente / Recent history:\n" + history_block
 
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id,
-        system_message=system_message,
-    ).with_model("anthropic", "claude-haiku-4-5-20251001")
+    # Build OpenAI-compatible messages payload for litellm.
+    # Emergent Universal Key is routed to the proxy via api_base; provider header is forced to "openai".
+    chat_messages: List[dict] = [{"role": "system", "content": system_message}]
+    if img_b64:
+        # Detect mime from base64 prefix if not provided
+        mime = img_mime or "image/jpeg"
+        chat_messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": model_user_text},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+            ],
+        })
+    else:
+        chat_messages.append({"role": "user", "content": model_user_text})
 
-    # Send with one automatic retry for transient errors
     async def _do_send():
-        if img_b64:
-            return await chat.send_message(
-                UserMessage(text=model_user_text, file_contents=[ImageContent(image_base64=img_b64)])
-            )
-        return await chat.send_message(UserMessage(text=model_user_text))
+        # litellm.acompletion is async; route Emergent Universal Key through proxy
+        return await litellm.acompletion(
+            model=MODEL_NAME,
+            messages=chat_messages,
+            api_key=EMERGENT_LLM_KEY,
+            api_base=EMERGENT_PROXY_URL,
+            custom_llm_provider="openai",
+            timeout=40,
+        )
 
     response_text = None
-    last_err = None
     for attempt in range(2):
         try:
-            response_text = await _do_send()
+            completion = await asyncio.wait_for(_do_send(), timeout=45)
+            response_text = completion.choices[0].message.content
             break
+        except asyncio.TimeoutError:
+            logger.warning("LLM timeout (>45s)")
+            if attempt == 0:
+                continue
+            raise HTTPException(status_code=504, detail="LLM_TIMEOUT")
         except Exception as e:
-            last_err = e
             err_str = str(e).lower()
-            # Classify error → return a friendly HTTP status the frontend can interpret
             if "budget" in err_str or "exceeded" in err_str or "insufficient" in err_str:
                 logger.warning(f"LLM budget exceeded: {e}")
-                raise HTTPException(
-                    status_code=402,  # Payment Required
-                    detail="BUDGET_EXCEEDED",
-                )
+                raise HTTPException(status_code=402, detail="BUDGET_EXCEEDED")
             if "rate" in err_str and "limit" in err_str:
                 if attempt == 0:
                     await asyncio.sleep(2)
@@ -404,14 +427,13 @@ if len(pdf_text) > MAX_PDF_CHARS:
                 raise HTTPException(status_code=429, detail="RATE_LIMIT")
             if "context" in err_str and ("length" in err_str or "window" in err_str or "tokens" in err_str):
                 raise HTTPException(status_code=413, detail="CONTEXT_TOO_LONG")
-            # Network / transient → retry once
             if attempt == 0:
                 await asyncio.sleep(1)
                 continue
             logger.exception("LLM error")
             raise HTTPException(status_code=502, detail="LLM_ERROR")
 
-    if response_text is None:
+    if not response_text:
         raise HTTPException(status_code=502, detail="LLM_ERROR")
 
     assistant_msg = Message(session_id=session_id, role="assistant", content=str(response_text))
@@ -420,7 +442,7 @@ if len(pdf_text) > MAX_PDF_CHARS:
     new_title = session.get("title", "Nueva sesión")
     if new_title == "Nueva sesión":
         clean_title = " ".join(user_text.split())
-new_title = clean_title[:60] + ("…" if len(user_text) > 60 else "")
+        new_title = clean_title[:60] + ("…" if len(clean_title) > 60 else "")
     now = datetime.now(timezone.utc).isoformat()
     await asyncio.gather(
         db.messages.insert_one(assistant_msg.model_dump()),
@@ -444,23 +466,28 @@ app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=False,  # using "*" origins requires credentials=False
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials=False,
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
-    max_age=86400,  # cache CORS preflight for 24h → reduces lag
+    max_age=86400,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+
 @app.on_event("startup")
 async def startup_db():
-    await db.messages.create_index([("session_id", 1), ("timestamp", -1)])
-    await db.sessions.create_index("updated_at")
+    if db is None:
+        logger.warning("MONGO_URL not set — MongoDB is disabled, only /api/ root will respond.")
+        return
+    try:
+        await db.messages.create_index([("session_id", 1), ("timestamp", -1)])
+        await db.sessions.create_index("updated_at")
+        logger.info("MongoDB indexes ensured.")
+    except Exception as e:
+        logger.warning(f"Could not create indexes: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    if client is not None:
+        client.close()

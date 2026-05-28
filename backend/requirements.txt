@@ -1,6 +1,5 @@
-# SYVREN backend — minimal dependencies for fast deploy
-# IMPORTANT: emergentintegrations is hosted on Emergent CDN, not PyPI.
-# Install with: pip install -r requirements.txt --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+# SYVREN backend — production dependencies (Vercel / Render / Railway / Fly.io compatible).
+# All packages are on PyPI — NO extra-index-url required.
 fastapi==0.110.1
 uvicorn[standard]==0.25.0
 motor==3.3.1
@@ -9,4 +8,4 @@ pydantic>=2.6.4
 python-dotenv>=1.0.1
 python-multipart>=0.0.9
 pypdf==6.11.0
-emergentintegrations==0.1.0
+litellm>=1.51.0
