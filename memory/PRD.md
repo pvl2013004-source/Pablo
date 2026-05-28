@@ -1,25 +1,33 @@
-# Tutor Metodológico Minimalista — SYVREN
+# SYVREN — Tutor Metodológico Minimalista (Production)
 
 ## Problema
-Aplicación de tutor de IA con protocolo estricto: nunca entrega el resultado final, solo guía con (1) Archivo de Datos, (2) un solo Paso Activo, (3) Acción de Cierre (pregunta).
+Tutor IA con protocolo estricto: nunca da el resultado final, guía con datos + 1 paso + 1 pregunta.
 
 ## Arquitectura
-- Backend: FastAPI + MongoDB + Claude Sonnet 4.5 vía emergentintegrations
-- Frontend: React 19 + Tailwind + react-markdown + KaTeX
-- Branding: SYVREN — paleta dark navy + azul eléctrico/cian
+- Frontend: React 19 + Tailwind + react-markdown + KaTeX + lucide-react
+- Backend: FastAPI + Motor (MongoDB) + litellm (proxy Emergent Universal Key) + pypdf + httpx
+- Auth: Emergent-managed Google OAuth (sin emergentintegrations en runtime)
+- LLM: Claude Haiku 4.5 vía litellm directo → `https://integrations.emergentagent.com/llm`
+- Hosting: Vercel (frontend) + Render/Vercel (backend) + MongoDB Atlas
 
-## Implementado (2026-05)
-- Sesiones de chat (CRUD) persistidas en MongoDB
-- Multi-turn con contexto histórico
-- 3 secciones renderizadas visualmente (data-testids)
-- 4 prompts de ejemplo en estado vacío
-- Sidebar con historial, borrar sesión
-- Logo SYVREN + texto a la derecha en sidebar y estado vacío
-- Tema oscuro navy adaptado al logo
-- Tests backend 10/10 pasando
+## Implementado
+- Chat con protocolo de 3 secciones (Archivo de Datos / Paso Activo / Acción de Cierre)
+- 4 idiomas (ES/EN/FR/PT) con selector
+- Descomposición automática de aritmética
+- Adjuntos imagen (JPG/PNG/WEBP, 5MB) con vision
+- Adjuntos PDF (10MB) con extracción de texto (cap 12000 chars)
+- Pegar imagen desde portapapeles
+- Ventana deslizante 10 turnos (conversaciones infinitas)
+- **Autenticación Google (Emergent OAuth)** — sesiones privadas por usuario
+- **Streaming SSE** — primer chunk visible en ~1.9s
+- Mongo indexes: users.email unique, user_sessions.session_token + TTL en expires_at
+- Errores HTTP semánticos (402 BUDGET, 429 RATE, 413 CONTEXT, 504 TIMEOUT, 502 LLM)
+- Auto-retry, asyncio.wait_for(45s)
+- Sin emergentintegrations en runtime (deploy Vercel funciona)
 
-## Backlog / Próximas mejoras
-- P2: Truncar historial a últimas N turns para optimizar tokens
-- P2: Streaming de respuestas
-- P2: Exportar conversación a PDF/Markdown
-- P2: Modo "examen" con bloqueo total de pistas
+## Backlog
+- Drag & drop sobre la ventana
+- Múltiples adjuntos por mensaje
+- Export conversación a PDF/Markdown
+- Modo "Examen" con bloqueo de pistas
+- Cleanup automático de sesiones vacías ("Nueva sesión")

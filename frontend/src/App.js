@@ -730,10 +730,19 @@ function AppInner({ user, onLogout }) {
             if (payload.type === "chunk") {
               setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: x.content + payload.text } : x));
             } else if (payload.type === "user") {
-              // Replace optimistic user msg id with the real one from server
-              setMessages((m) => m.map((x) => x.id === tempUserId ? { ...payload.message } : x));
+              // Replace optimistic user msg id with the real one from server. Dedupe if already present.
+              setMessages((m) => {
+                const finalId = payload.message.id;
+                const filtered = m.filter((x) => x.id !== finalId);
+                return filtered.map((x) => x.id === tempUserId ? { ...payload.message } : x);
+              });
             } else if (payload.type === "done") {
-              setMessages((m) => m.map((x) => x.id === streamId ? { ...payload.assistant } : x));
+              setMessages((m) => {
+                // Dedupe by id: replace stream placeholder AND filter any prior copy of the final assistant message
+                const finalId = payload.assistant.id;
+                const filtered = m.filter((x) => x.id !== finalId);
+                return filtered.map((x) => x.id === streamId ? { ...payload.assistant } : x);
+              });
               setSessions((s) => {
                 const others = s.filter((x) => x.id !== payload.session.id);
                 return [payload.session, ...others];
