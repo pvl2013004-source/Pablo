@@ -3,7 +3,6 @@ __pycache__/
 *.pyo
 .env
 .env.example
-.python-version
 venv/
 .venv/
 *.log

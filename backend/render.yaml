@@ -6,9 +6,7 @@ services:
     runtime: python
     plan: free
     rootDir: backend
-    # IMPORTANT: emergentintegrations is hosted on Emergent's CDN, not PyPI.
-    # The --extra-index-url is REQUIRED for the build to succeed.
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /api/
     envVars:
@@ -22,5 +20,3 @@ services:
         sync: false  # set to your Vercel URL e.g. https://syvren3.vercel.app
       - key: PYTHON_VERSION
         value: "3.11.10"
-      - key: PIP_EXTRA_INDEX_URL
-        value: https://d33sy5i8bnduwe.cloudfront.net/simple/
