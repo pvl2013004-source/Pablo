@@ -1,0 +1,26 @@
+# Excludes for Vercel — keeps backend bundle small.
+# Frontend never goes into the backend project's lambda.
+frontend/
+node_modules/
+*.log
+.git/
+.emergent/
+tests/
+test_reports/
+docs/
+*.md
+__pycache__/
+*.pyc
+.python-version
+.venv/
+venv/
+Dockerfile
+Procfile
+render.yaml
+pip.conf
+runtime.txt
+.env
+.env.example
+auth_testing.md
+image_testing.md
+design_guidelines.json
