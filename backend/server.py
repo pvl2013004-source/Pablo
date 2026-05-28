@@ -4,7 +4,6 @@ from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict
-from pypdf import PdfReader
 import httpx
 import json
 import os
@@ -488,6 +487,7 @@ async def send_message(session_id: str, payload: SendMessageRequest, user: User 
             pdf_bytes = _b64.b64decode(pdf_b64)
             if len(pdf_bytes) > 10 * 1024 * 1024:
                 raise HTTPException(status_code=400, detail="PDF demasiado grande (máx 10 MB)")
+            from pypdf import PdfReader  # lazy import to keep cold start light
             reader = PdfReader(io.BytesIO(pdf_bytes))
             pdf_pages = len(reader.pages)
             extracted = []
@@ -698,6 +698,7 @@ async def stream_message(
             pdf_bytes = _b64.b64decode(pdf_b64)
             if len(pdf_bytes) > 10 * 1024 * 1024:
                 raise HTTPException(status_code=400, detail="PDF demasiado grande (máx 10 MB)")
+            from pypdf import PdfReader  # lazy import to keep cold start light
             reader = PdfReader(io.BytesIO(pdf_bytes))
             pdf_pages = len(reader.pages)
             extracted = [f"[Página {i+1}]\n{p.extract_text() or ''}" for i, p in enumerate(reader.pages[:50])]
