@@ -2,7 +2,7 @@
 name = "syvren-backend"
 version = "1.0.0"
 description = "SYVREN — Tutor Metodologico backend"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "fastapi==0.110.1",
     "uvicorn==0.30.1",
