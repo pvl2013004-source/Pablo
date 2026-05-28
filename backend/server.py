@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict
 from pypdf import PdfReader
-import litellm
 import httpx
 import json
 import os
@@ -47,9 +46,35 @@ logger = logging.getLogger("syvren")
 app = FastAPI(title="SYVREN — Tutor Metodológico API")
 api_router = APIRouter(prefix="/api")
 
-# MongoDB (lazy-fail: if MONGO_URL is missing we still let FastAPI boot so /api/ replies)
-client: Optional[AsyncIOMotorClient] = AsyncIOMotorClient(MONGO_URL) if MONGO_URL else None
-db = client[DB_NAME] if client is not None else None
+# MongoDB (lazy: avoid crashing the module if MONGO_URL is missing at import time)
+_mongo_client: Optional[AsyncIOMotorClient] = None
+
+
+def get_db():
+    """Lazily create the Mongo client on first use. Safer for serverless cold starts."""
+    global _mongo_client
+    if not MONGO_URL:
+        return None
+    if _mongo_client is None:
+        _mongo_client = AsyncIOMotorClient(
+            MONGO_URL,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+        )
+    return _mongo_client[DB_NAME]
+
+
+class _DBProxy:
+    """Lets existing `db.collection.method(...)` syntax keep working with the lazy client."""
+    def __getattr__(self, name):
+        actual = get_db()
+        if actual is None:
+            raise HTTPException(status_code=503, detail="Base de datos no configurada")
+        return getattr(actual, name)
+
+
+db = _DBProxy()
+client = None  # kept for backward-compat with shutdown handler
 
 # Tutor system prompts per language
 PROMPT_ES = """Rol: Eres un tutor de alta precisión. Tu objetivo es proporcionar datos y guiar el proceso paso a paso sin entregar nunca el resultado final.
@@ -293,7 +318,7 @@ async def auth_google_session(payload: GoogleSessionRequest, response: Response)
     Exchange a one-time `session_id` (from Emergent Google Auth URL fragment) for a 7-day
     `session_token`. Stores the user in MongoDB and sets the cookie.
     """
-    if db is None:
+    if get_db() is None:
         raise HTTPException(status_code=503, detail="Base de datos no disponible")
 
     # Call Emergent Auth backend (NEVER do this from the frontend)
@@ -377,7 +402,7 @@ async def auth_logout(
     token = session_token
     if not token and authorization and authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()
-    if token and db is not None:
+    if token and get_db() is not None:
         await db.user_sessions.delete_one({"session_token": token})
     response.delete_cookie("session_token", path="/", samesite="none", secure=True)
     return {"ok": True}
@@ -556,39 +581,48 @@ async def send_message(session_id: str, payload: SendMessageRequest, user: User 
         chat_messages.append({"role": "user", "content": model_user_text})
 
     async def _do_send():
-        # litellm.acompletion is async; route Emergent Universal Key through proxy
-        return await litellm.acompletion(
-            model=MODEL_NAME,
-            messages=chat_messages,
-            api_key=EMERGENT_LLM_KEY,
-            api_base=EMERGENT_PROXY_URL,
-            custom_llm_provider="openai",
-            timeout=40,
-        )
+        # Direct httpx POST to Emergent's OpenAI-compatible proxy. Avoids litellm bloat (Vercel-friendly).
+        async with httpx.AsyncClient(timeout=40) as http:
+            r = await http.post(
+                f"{EMERGENT_PROXY_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {EMERGENT_LLM_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": MODEL_NAME, "messages": chat_messages},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data["choices"][0]["message"]["content"]
 
     response_text = None
     for attempt in range(2):
         try:
-            completion = await asyncio.wait_for(_do_send(), timeout=45)
-            response_text = completion.choices[0].message.content
+            response_text = await asyncio.wait_for(_do_send(), timeout=45)
             break
         except asyncio.TimeoutError:
             logger.warning("LLM timeout (>45s)")
             if attempt == 0:
                 continue
             raise HTTPException(status_code=504, detail="LLM_TIMEOUT")
-        except Exception as e:
-            err_str = str(e).lower()
-            if "budget" in err_str or "exceeded" in err_str or "insufficient" in err_str:
-                logger.warning(f"LLM budget exceeded: {e}")
+        except httpx.HTTPStatusError as e:
+            err_text = (e.response.text or "").lower()
+            status = e.response.status_code
+            if status == 402 or "budget" in err_text or "exceeded" in err_text or "insufficient" in err_text:
                 raise HTTPException(status_code=402, detail="BUDGET_EXCEEDED")
-            if "rate" in err_str and "limit" in err_str:
+            if status == 429 or "rate" in err_text:
                 if attempt == 0:
                     await asyncio.sleep(2)
                     continue
                 raise HTTPException(status_code=429, detail="RATE_LIMIT")
-            if "context" in err_str and ("length" in err_str or "window" in err_str or "tokens" in err_str):
+            if "context" in err_text and ("length" in err_text or "window" in err_text or "tokens" in err_text):
                 raise HTTPException(status_code=413, detail="CONTEXT_TOO_LONG")
+            if attempt == 0:
+                await asyncio.sleep(1)
+                continue
+            logger.exception("LLM HTTP error")
+            raise HTTPException(status_code=502, detail="LLM_ERROR")
+        except Exception:
             if attempt == 0:
                 await asyncio.sleep(1)
                 continue
@@ -736,24 +770,39 @@ async def stream_message(
 
         accumulated = ""
         try:
-            resp = await litellm.acompletion(
-                model=MODEL_NAME,
-                messages=chat_messages,
-                api_key=EMERGENT_LLM_KEY,
-                api_base=EMERGENT_PROXY_URL,
-                custom_llm_provider="openai",
-                stream=True,
-                timeout=40,
-            )
-            async for chunk in resp:
-                try:
-                    delta = chunk.choices[0].delta
-                    text = getattr(delta, "content", None) or ""
-                except Exception:
-                    text = ""
-                if text:
-                    accumulated += text
-                    yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+            async with httpx.AsyncClient(timeout=60) as http:
+                async with http.stream(
+                    "POST",
+                    f"{EMERGENT_PROXY_URL}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {EMERGENT_LLM_KEY}",
+                        "Content-Type": "application/json",
+                        "Accept": "text/event-stream",
+                    },
+                    json={"model": MODEL_NAME, "messages": chat_messages, "stream": True},
+                ) as resp:
+                    if resp.status_code >= 400:
+                        body = (await resp.aread()).decode("utf-8", errors="ignore").lower()
+                        if resp.status_code == 402 or "budget" in body or "exceeded" in body or "insufficient" in body:
+                            yield f"data: {json.dumps({'type': 'error', 'code': 'BUDGET_EXCEEDED'})}\n\n"
+                            return
+                        yield f"data: {json.dumps({'type': 'error', 'code': 'LLM_ERROR', 'detail': body[:200]})}\n\n"
+                        return
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            evt = json.loads(payload)
+                            delta = evt.get("choices", [{}])[0].get("delta", {})
+                            text = delta.get("content") or ""
+                        except Exception:
+                            text = ""
+                        if text:
+                            accumulated += text
+                            yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
         except Exception as e:
             err_str = str(e).lower()
             if "budget" in err_str or "exceeded" in err_str or "insufficient" in err_str:
@@ -805,7 +854,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_db():
-    if db is None:
+    if get_db() is None:
         logger.warning("MONGO_URL not set — MongoDB is disabled, only /api/ root will respond.")
         return
     try:
@@ -823,5 +872,6 @@ async def startup_db():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    if client is not None:
-        client.close()
+    global _mongo_client
+    if _mongo_client is not None:
+        _mongo_client.close()
