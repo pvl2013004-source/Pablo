@@ -23,6 +23,8 @@ load_dotenv(ROOT_DIR / '.env')
 # Top-level config (must be importable by Vercel / uvicorn / gunicorn)
 MONGO_URL = os.environ.get('MONGO_URL', '').strip()
 DB_NAME = os.environ.get('DB_NAME', 'syvren').strip()
+# DEMO MODE — no external LLM key required. The chat returns a deterministic
+# SYVREN-shaped response. Kept GEMINI_API_KEY env read for future re-enablement.
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',') if o.strip()]
 # Cookies need explicit allowed credential origins (no wildcard).
@@ -30,10 +32,6 @@ COOKIE_ORIGINS = [o for o in CORS_ORIGINS if o != '*']
 
 EMERGENT_AUTH_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 SESSION_DAYS = 7
-
-# Emergent Universal Key talks to this OpenAI-compatible proxy.
-EMERGENT_PROXY_URL = 'https://integrations.emergentagent.com/llm'
-MODEL_NAME = 'claude-haiku-4-5-20251001'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,21 +53,20 @@ def get_db():
     if not MONGO_URL:
         return None
     if _mongo_client is None:
-        import certifi
-        # tlsAllowInvalidCertificates is a workaround for the TLSV1_ALERT_INTERNAL_ERROR
-        # bug that affects some Python/OpenSSL combinations against MongoDB Atlas 8.0
-        # replica sets on Render. Safe here because Atlas only accepts connections from
-        # the whitelisted IP range we configured in Network Access.
-        _mongo_client = AsyncIOMotorClient(
-            MONGO_URL,
+        # Atlas URLs (mongodb+srv://) need TLS + certifi CA bundle. Local Mongo (mongodb://)
+        # usually doesn't speak TLS, so we only apply TLS settings for Atlas.
+        kwargs = dict(
             serverSelectionTimeoutMS=15000,
             connectTimeoutMS=15000,
             socketTimeoutMS=20000,
-            tls=True,
-            tlsCAFile=certifi.where(),
-            tlsAllowInvalidCertificates=True,
             retryWrites=True,
         )
+        if MONGO_URL.startswith("mongodb+srv://") or "mongodb.net" in MONGO_URL:
+            import certifi
+            # tlsAllowInvalidCertificates is a workaround for the TLSV1_ALERT_INTERNAL_ERROR
+            # bug that affects some Python/OpenSSL combinations against MongoDB Atlas 8.0.
+            kwargs.update(tls=True, tlsCAFile=certifi.where(), tlsAllowInvalidCertificates=True)
+        _mongo_client = AsyncIOMotorClient(MONGO_URL, **kwargs)
     return _mongo_client[DB_NAME]
 
 
@@ -468,9 +465,7 @@ async def send_message(session_id: str, payload: SendMessageRequest, user: User 
     if not session:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="LLM key no configurada")
-
+    # DEMO MODE: no external API key required.
     user_text = payload.content.strip()
     if not user_text and not payload.image_base64 and not payload.pdf_base64:
         raise HTTPException(status_code=400, detail="Mensaje vacío")
@@ -597,56 +592,44 @@ async def send_message(session_id: str, payload: SendMessageRequest, user: User 
         chat_messages.append({"role": "user", "content": model_user_text})
 
     async def _do_send():
-        # Direct httpx POST to Emergent's OpenAI-compatible proxy. Avoids litellm bloat (Vercel-friendly).
-        async with httpx.AsyncClient(timeout=40) as http:
-            r = await http.post(
-                f"{EMERGENT_PROXY_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {EMERGENT_LLM_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={"model": MODEL_NAME, "messages": chat_messages},
-            )
-            r.raise_for_status()
-            data = r.json()
-            return data["choices"][0]["message"]["content"]
+        # DEMO MODE: deterministic local SYVREN response (no external AI).
+        lang = (payload.language or "es").lower()
+        attachments = []
+        if img_b64:
+            attachments.append("imagen")
+        if pdf_text:
+            attachments.append(f"PDF ({pdf_name or 'documento'})")
+        attach_note = (" · adjunto: " + ", ".join(attachments)) if attachments else ""
+        templates = {
+            "es": (
+                f"## Archivo de Datos\n- Mensaje recibido: \"{user_text[:160]}\"{attach_note}\n- Modo: demostración local\n\n"
+                "## Paso Activo\nIdentifica el dato clave y escríbelo en una sola frase.\n\n"
+                "## Acción de Cierre\n¿Cuál es la información más importante que ya tienes?"
+            ),
+            "en": (
+                f"## Data File\n- Message received: \"{user_text[:160]}\"{attach_note}\n- Mode: local demo\n\n"
+                "## Active Step\nIdentify the key information and write it in a single sentence.\n\n"
+                "## Closing Action\nWhat is the most important piece of information you already have?"
+            ),
+            "fr": (
+                f"## Fichier de Données\n- Message reçu : « {user_text[:160]} »{attach_note}\n- Mode : démonstration locale\n\n"
+                "## Étape Active\nIdentifie la donnée clé et écris-la en une seule phrase.\n\n"
+                "## Action de Clôture\nQuelle est la donnée la plus importante ?"
+            ),
+            "pt": (
+                f"## Arquivo de Dados\n- Mensagem recebida: \"{user_text[:160]}\"{attach_note}\n- Modo: demonstração local\n\n"
+                "## Passo Ativo\nIdentifique o dado-chave e escreva-o em uma única frase.\n\n"
+                "## Ação de Encerramento\nQual é o dado mais importante que você já tem?"
+            ),
+        }
+        return templates.get(lang, templates["es"])
 
     response_text = None
-    for attempt in range(2):
-        try:
-            response_text = await asyncio.wait_for(_do_send(), timeout=45)
-            break
-        except asyncio.TimeoutError:
-            logger.warning("LLM timeout (>45s)")
-            if attempt == 0:
-                continue
-            raise HTTPException(status_code=504, detail="LLM_TIMEOUT")
-        except httpx.HTTPStatusError as e:
-            err_text = (e.response.text or "").lower()
-            status = e.response.status_code
-            if status == 402 or "budget" in err_text or "exceeded" in err_text or "insufficient" in err_text:
-                raise HTTPException(status_code=402, detail="BUDGET_EXCEEDED")
-            if status == 429 or "rate" in err_text:
-                if attempt == 0:
-                    await asyncio.sleep(2)
-                    continue
-                raise HTTPException(status_code=429, detail="RATE_LIMIT")
-            if "context" in err_text and ("length" in err_text or "window" in err_text or "tokens" in err_text):
-                raise HTTPException(status_code=413, detail="CONTEXT_TOO_LONG")
-            if attempt == 0:
-                await asyncio.sleep(1)
-                continue
-            logger.exception("LLM HTTP error")
-            raise HTTPException(status_code=502, detail="LLM_ERROR")
-        except Exception:
-            if attempt == 0:
-                await asyncio.sleep(1)
-                continue
-            logger.exception("LLM error")
-            raise HTTPException(status_code=502, detail="LLM_ERROR")
-
-    if not response_text:
-        raise HTTPException(status_code=502, detail="LLM_ERROR")
+    try:
+        response_text = await _do_send()
+    except Exception:
+        logger.exception("Demo response error")
+        response_text = "SYVREN recibió tu mensaje correctamente."
 
     assistant_msg = Message(session_id=session_id, role="assistant", content=str(response_text))
 
@@ -684,8 +667,7 @@ async def stream_message(
     session = await db.sessions.find_one({"id": session_id, "user_id": user.user_id}, {"_id": 0})
     if not session:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="LLM key no configurada")
+    # DEMO MODE: no external API key required.
 
     user_text = (payload.content or "").strip()
     img_b64 = payload.image_base64
@@ -785,49 +767,71 @@ async def stream_message(
         # Send the user-message metadata immediately so the client can render it
         yield f"data: {json.dumps({'type': 'user', 'message': user_msg.model_dump()})}\n\n"
 
+        # ----------------------------------------------------------------------
+        # DEMO MODE — no external AI. We emit a deterministic SYVREN-shaped
+        # response so the school presentation works even without an LLM key.
+        # The full streaming path to Emergent / Gemini was removed on purpose.
+        # ----------------------------------------------------------------------
         accumulated = ""
         try:
-            async with httpx.AsyncClient(timeout=60) as http:
-                async with http.stream(
-                    "POST",
-                    f"{EMERGENT_PROXY_URL}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {EMERGENT_LLM_KEY}",
-                        "Content-Type": "application/json",
-                        "Accept": "text/event-stream",
-                    },
-                    json={"model": MODEL_NAME, "messages": chat_messages, "stream": True},
-                ) as resp:
-                    if resp.status_code >= 400:
-                        body = (await resp.aread()).decode("utf-8", errors="ignore")
-                        logger.error(f"[llm] status={resp.status_code} body={body[:500]} key_len={len(EMERGENT_LLM_KEY)} key_prefix={EMERGENT_LLM_KEY[:15]}")
-                        body_lower = body.lower()
-                        if resp.status_code == 402 or "budget" in body_lower or "exceeded" in body_lower or "insufficient" in body_lower:
-                            yield f"data: {json.dumps({'type': 'error', 'code': 'BUDGET_EXCEEDED'})}\n\n"
-                            return
-                        yield f"data: {json.dumps({'type': 'error', 'code': 'LLM_ERROR', 'detail': body[:200]})}\n\n"
-                        return
-                    async for line in resp.aiter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        payload = line[5:].strip()
-                        if payload == "[DONE]":
-                            break
-                        try:
-                            evt = json.loads(payload)
-                            delta = evt.get("choices", [{}])[0].get("delta", {})
-                            text = delta.get("content") or ""
-                        except Exception:
-                            text = ""
-                        if text:
-                            accumulated += text
-                            yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+            lang = (payload.language or "es").lower()
+            attachments = []
+            if img_b64:
+                attachments.append("imagen")
+            if pdf_text:
+                attachments.append(f"PDF ({pdf_name or 'documento'}, {pdf_pages or '?'} págs)")
+            attach_note = (" · adjunto: " + ", ".join(attachments)) if attachments else ""
+
+            templates = {
+                "es": (
+                    "## Archivo de Datos\n"
+                    f"- Mensaje recibido por SYVREN: \"{user_text[:160]}\"{attach_note}\n"
+                    "- Modo: demostración local (sin IA externa)\n\n"
+                    "## Paso Activo\n"
+                    "Identifica la información clave de tu enunciado y escríbela en una sola frase.\n\n"
+                    "## Acción de Cierre\n"
+                    "¿Cuál es el dato más importante que ya tienes?"
+                ),
+                "en": (
+                    "## Data File\n"
+                    f"- Message received by SYVREN: \"{user_text[:160]}\"{attach_note}\n"
+                    "- Mode: local demo (no external AI)\n\n"
+                    "## Active Step\n"
+                    "Identify the key information in your problem and write it in a single sentence.\n\n"
+                    "## Closing Action\n"
+                    "What is the most important piece of information you already have?"
+                ),
+                "fr": (
+                    "## Fichier de Données\n"
+                    f"- Message reçu par SYVREN : « {user_text[:160]} »{attach_note}\n"
+                    "- Mode : démonstration locale (sans IA externe)\n\n"
+                    "## Étape Active\n"
+                    "Identifie l'information clé de ton énoncé et écris-la en une seule phrase.\n\n"
+                    "## Action de Clôture\n"
+                    "Quelle est la donnée la plus importante que tu as déjà ?"
+                ),
+                "pt": (
+                    "## Arquivo de Dados\n"
+                    f"- Mensagem recebida pelo SYVREN: \"{user_text[:160]}\"{attach_note}\n"
+                    "- Modo: demonstração local (sem IA externa)\n\n"
+                    "## Passo Ativo\n"
+                    "Identifique a informação-chave do enunciado e escreva-a em uma única frase.\n\n"
+                    "## Ação de Encerramento\n"
+                    "Qual é o dado mais importante que você já tem?"
+                ),
+            }
+            demo_text = templates.get(lang, templates["es"])
+
+            # Stream the demo text word-by-word so the UX feels real.
+            words = demo_text.split(" ")
+            for i, w in enumerate(words):
+                chunk = w if i == 0 else " " + w
+                accumulated += chunk
+                yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+                await asyncio.sleep(0.02)
         except Exception as e:
-            err_str = str(e).lower()
-            if "budget" in err_str or "exceeded" in err_str or "insufficient" in err_str:
-                yield f"data: {json.dumps({'type': 'error', 'code': 'BUDGET_EXCEEDED'})}\n\n"
-                return
-            yield f"data: {json.dumps({'type': 'error', 'code': 'LLM_ERROR', 'detail': str(e)[:200]})}\n\n"
+            logger.exception("Demo response failed")
+            yield f"data: {json.dumps({'type': 'error', 'code': 'DEMO_ERROR', 'detail': str(e)[:200]})}\n\n"
             return
 
         if not accumulated:
@@ -840,13 +844,17 @@ async def stream_message(
             clean = " ".join(user_text.split())
             new_title = clean[:60] + ("…" if len(clean) > 60 else "")
         now = datetime.now(timezone.utc).isoformat()
-        await asyncio.gather(
-            db.messages.insert_one(assistant_msg.model_dump()),
-            db.sessions.update_one(
-                {"id": session_id, "user_id": user.user_id},
-                {"$set": {"title": new_title, "updated_at": now}},
-            ),
-        )
+        try:
+            await asyncio.gather(
+                db.messages.insert_one(assistant_msg.model_dump()),
+                db.sessions.update_one(
+                    {"id": session_id, "user_id": user.user_id},
+                    {"$set": {"title": new_title, "updated_at": now}},
+                ),
+            )
+        except Exception as e:
+            # Don't crash the response if Mongo hiccups — the client already has the text.
+            logger.warning(f"Could not persist assistant message: {e}")
         updated_session = {**session, "title": new_title, "updated_at": now}
         yield f"data: {json.dumps({'type': 'done', 'assistant': assistant_msg.model_dump(), 'session': Session(**updated_session).model_dump()})}\n\n"
 
