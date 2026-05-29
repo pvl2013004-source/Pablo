@@ -12,10 +12,14 @@ const LOGO_SRC = "/syvren-logo.jpeg";
 
 // Axios instance with a generous timeout so a sleeping Render backend (cold start ~30s)
 // or a long Claude response doesn't fail prematurely.
+// withCredentials is DISABLED because backend and frontend live on different subdomains
+// (syvren3.onrender.com / syvren4.onrender.com). iOS Safari ITP blocks cross-site
+// credentialed requests entirely (manifests as "Network Error"). We rely on the
+// Authorization: Bearer header (localStorage) instead.
 const api = axios.create({
   baseURL: API,
   timeout: 90000,
-  withCredentials: true, // send/receive httpOnly session_token cookie
+  withCredentials: false,
   headers: { "Content-Type": "application/json" },
 });
 
@@ -709,7 +713,7 @@ function AppInner({ user, onLogout }) {
     try {
       const resp = await fetch(`${API}/chat/sessions/${sid}/stream`, {
         method: "POST",
-        credentials: "include",
+        credentials: "omit",
         headers: {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
