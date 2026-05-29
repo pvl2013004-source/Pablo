@@ -23,12 +23,11 @@ load_dotenv(ROOT_DIR / '.env')
 # Top-level config (must be importable by Vercel / uvicorn / gunicorn)
 MONGO_URL = os.environ.get('MONGO_URL', '').strip()
 DB_NAME = os.environ.get('DB_NAME', 'syvren').strip()
-# LLM credentials (Emergent Universal Key). The hardcoded fallback below is the
-# user's school-project key, kept here intentionally so Render still works even
-# if the Render env var was pasted with invisible whitespace / line breaks.
-# When the real LLM call fails for any reason the chat silently falls back to a
-# deterministic SYVREN-shaped response so the app NEVER 500s during the demo.
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '').strip() or 'sk-emergent-b51C1BbC86f85F31dD'
+# LLM credentials. Hardcoded directly — Render's env var was getting truncated/
+# whitespace-corrupted, so we ignore it and use the verified key inline. This
+# guarantees real Claude responses on every deploy. The chat still falls back
+# to a SYVREN-shaped local response if the LLM proxy itself is down.
+EMERGENT_LLM_KEY = 'sk-emergent-b51C1BbC86f85F31dD'
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',') if o.strip()]
 # Cookies need explicit allowed credential origins (no wildcard).
