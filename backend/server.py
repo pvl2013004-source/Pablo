@@ -21,9 +21,9 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # Top-level config (must be importable by Vercel / uvicorn / gunicorn)
-MONGO_URL = os.environ.get('MONGO_URL', '')
-DB_NAME = os.environ.get('DB_NAME', 'syvren')
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+MONGO_URL = os.environ.get('MONGO_URL', '').strip()
+DB_NAME = os.environ.get('DB_NAME', 'syvren').strip()
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '').strip()
 CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',') if o.strip()]
 # Cookies need explicit allowed credential origins (no wildcard).
 COOKIE_ORIGINS = [o for o in CORS_ORIGINS if o != '*']
@@ -799,8 +799,10 @@ async def stream_message(
                     json={"model": MODEL_NAME, "messages": chat_messages, "stream": True},
                 ) as resp:
                     if resp.status_code >= 400:
-                        body = (await resp.aread()).decode("utf-8", errors="ignore").lower()
-                        if resp.status_code == 402 or "budget" in body or "exceeded" in body or "insufficient" in body:
+                        body = (await resp.aread()).decode("utf-8", errors="ignore")
+                        logger.error(f"[llm] status={resp.status_code} body={body[:500]} key_len={len(EMERGENT_LLM_KEY)} key_prefix={EMERGENT_LLM_KEY[:15]}")
+                        body_lower = body.lower()
+                        if resp.status_code == 402 or "budget" in body_lower or "exceeded" in body_lower or "insufficient" in body_lower:
                             yield f"data: {json.dumps({'type': 'error', 'code': 'BUDGET_EXCEEDED'})}\n\n"
                             return
                         yield f"data: {json.dumps({'type': 'error', 'code': 'LLM_ERROR', 'detail': body[:200]})}\n\n"
