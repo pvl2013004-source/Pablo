@@ -321,15 +321,19 @@ async def auth_google_session(payload: GoogleSessionRequest, response: Response)
         raise HTTPException(status_code=503, detail="Base de datos no disponible")
 
     # Call Emergent Auth backend (NEVER do this from the frontend)
+    logger.info(f"[auth] Exchanging session_id={payload.session_id[:8]}...")
     try:
         async with httpx.AsyncClient(timeout=15) as http:
             r = await http.get(
                 EMERGENT_AUTH_SESSION_URL,
                 headers={"X-Session-ID": payload.session_id},
             )
+        logger.info(f"[auth] Emergent returned status={r.status_code}")
         if r.status_code != 200:
+            logger.warning(f"[auth] Emergent body: {r.text[:300]}")
             raise HTTPException(status_code=401, detail="Sesión Google inválida")
         data = r.json()
+        logger.info(f"[auth] Emergent payload keys: {list(data.keys())}")
     except HTTPException:
         raise
     except Exception as e:
@@ -341,7 +345,9 @@ async def auth_google_session(payload: GoogleSessionRequest, response: Response)
     picture = data.get("picture")
     session_token = data.get("session_token")
     if not email or not session_token:
+        logger.error(f"[auth] Incomplete: email={bool(email)} session_token={bool(session_token)} keys={list(data.keys())}")
         raise HTTPException(status_code=502, detail="Respuesta auth incompleta")
+    logger.info(f"[auth] Success for {email}")
 
     # Upsert user (find by email — Google accounts are identified by email)
     user_doc = await db.users.find_one({"email": email}, {"_id": 0})
