@@ -55,10 +55,12 @@ def get_db():
     if not MONGO_URL:
         return None
     if _mongo_client is None:
+        import certifi
         _mongo_client = AsyncIOMotorClient(
             MONGO_URL,
-            serverSelectionTimeoutMS=5000,
-            connectTimeoutMS=5000,
+            serverSelectionTimeoutMS=10000,
+            connectTimeoutMS=10000,
+            tlsCAFile=certifi.where(),
         )
     return _mongo_client[DB_NAME]
 
