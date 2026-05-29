@@ -859,6 +859,42 @@ app.add_middleware(
 )
 
 
+# Serve the React build from the same domain (no more CORS / cookie / ITP issues).
+# The render.yaml build step runs `yarn build` so this path exists in production.
+FRONTEND_BUILD = ROOT_DIR.parent / "frontend" / "build"
+if FRONTEND_BUILD.exists():
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+
+    # Static assets (JS, CSS, fonts, images)
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_BUILD / "static")), name="static")
+
+    # Public files at the root (favicon, manifest, logo)
+    @app.get("/manifest.json")
+    async def _manifest():
+        return FileResponse(FRONTEND_BUILD / "manifest.json")
+
+    @app.get("/syvren-logo.jpeg")
+    async def _logo():
+        return FileResponse(FRONTEND_BUILD / "syvren-logo.jpeg")
+
+    @app.get("/favicon.ico")
+    async def _favicon():
+        f = FRONTEND_BUILD / "favicon.ico"
+        if f.exists():
+            return FileResponse(f)
+        return FileResponse(FRONTEND_BUILD / "syvren-logo.jpeg")
+
+    # SPA catch-all: any other path returns index.html so React Router takes over.
+    # IMPORTANT: this MUST be the last route so /api/* still works.
+    @app.get("/{full_path:path}")
+    async def _spa(full_path: str):
+        # Never shadow the API
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(FRONTEND_BUILD / "index.html")
+
+
 @app.on_event("startup")
 async def startup_db():
     if get_db() is None:

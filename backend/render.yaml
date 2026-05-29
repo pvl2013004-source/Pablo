@@ -1,22 +1,28 @@
-# Render deployment configuration for SYVREN backend
-# Free tier: deploy at https://render.com → New Web Service → connect this repo → root dir: backend
+# Render deployment — SINGLE service that serves frontend + backend on the same domain.
+# This eliminates ALL cross-origin headaches (CORS, ITP, cookies, etc.).
 services:
   - type: web
     name: syvren-backend
     runtime: python
     plan: free
-    rootDir: backend
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1
+    rootDir: .
+    buildCommand: |
+      cd frontend && yarn install --frozen-lockfile && CI=false yarn build && cd .. \
+      && cd backend && pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: cd backend && uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /api/
     envVars:
       - key: MONGO_URL
-        sync: false  # set manually in Render dashboard (MongoDB Atlas URI)
+        sync: false
       - key: DB_NAME
         value: syvren
       - key: EMERGENT_LLM_KEY
-        sync: false  # paste your key in Render dashboard
+        sync: false
       - key: CORS_ORIGINS
-        sync: false  # set to your Vercel URL e.g. https://syvren3.vercel.app
+        value: "*"
+      - key: REACT_APP_BACKEND_URL
+        value: ""
       - key: PYTHON_VERSION
         value: "3.11.10"
+      - key: NODE_VERSION
+        value: "20.11.0"
