@@ -414,6 +414,7 @@ function AuthGate() {
   // null = checking, false = unauthenticated, object = user
   const [authState, setAuthState] = useState(null);
   const [exchanging, setExchanging] = useState(false);
+  const [authError, setAuthError] = useState(null);
   const exchangedRef = useRef(false);
 
   // 1) If URL hash contains session_id (returning from Google OAuth), exchange it first.
@@ -433,6 +434,9 @@ function AuthGate() {
           setAuthState(data.user);
         } catch (e) {
           console.error("Auth exchange failed", e);
+          const status = e?.response?.status || "network";
+          const detail = e?.response?.data?.detail || e?.message || String(e);
+          setAuthError(`Login error (${status}): ${detail}`);
           setAuthState(false);
         } finally {
           setExchanging(false);
@@ -455,12 +459,13 @@ function AuthGate() {
 
   function startLogin() {
     // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+    setAuthError(null);
     const redirectUrl = window.location.origin + "/";
     window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
   }
 
   if (authState === null || exchanging) return <LoadingScreen />;
-  if (authState === false) return <LoginScreen onLogin={startLogin} />;
+  if (authState === false) return <LoginScreen onLogin={startLogin} errorMessage={authError} />;
   return <AppInner user={authState} onLogout={() => { localStorage.removeItem("syvren_session_token"); setAuthState(false); }} />;
 }
 
@@ -484,7 +489,7 @@ function LoadingScreen() {
   );
 }
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, errorMessage }) {
   return (
     <div
       className="min-h-screen flex items-center justify-center p-6"
@@ -511,6 +516,16 @@ function LoginScreen({ onLogin }) {
         <p className="mt-6 text-base leading-relaxed" style={{ color: "var(--text-secondary)" }}>
           Tus conversaciones y tu progreso quedan guardados de forma privada en tu cuenta.
         </p>
+
+        {errorMessage && (
+          <div
+            data-testid="login-error"
+            className="mt-6 p-3 rounded text-xs font-mono break-all"
+            style={{ background: "rgba(239,68,68,0.10)", color: "#fca5a5", border: "1px solid rgba(239,68,68,0.30)" }}
+          >
+            {errorMessage}
+          </div>
+        )}
 
         <button
           onClick={onLogin}
