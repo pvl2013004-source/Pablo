@@ -6,7 +6,7 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Plus, Send, Trash2, Menu, X, Globe, Check, Paperclip, FileText, LogOut, LogIn } from "lucide-react";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 const API = `${BACKEND_URL}/api`;
 const LOGO_SRC = "/syvren-logo.jpeg";
 
