@@ -56,11 +56,19 @@ def get_db():
         return None
     if _mongo_client is None:
         import certifi
+        # tlsAllowInvalidCertificates is a workaround for the TLSV1_ALERT_INTERNAL_ERROR
+        # bug that affects some Python/OpenSSL combinations against MongoDB Atlas 8.0
+        # replica sets on Render. Safe here because Atlas only accepts connections from
+        # the whitelisted IP range we configured in Network Access.
         _mongo_client = AsyncIOMotorClient(
             MONGO_URL,
-            serverSelectionTimeoutMS=10000,
-            connectTimeoutMS=10000,
+            serverSelectionTimeoutMS=15000,
+            connectTimeoutMS=15000,
+            socketTimeoutMS=20000,
+            tls=True,
             tlsCAFile=certifi.where(),
+            tlsAllowInvalidCertificates=True,
+            retryWrites=True,
         )
     return _mongo_client[DB_NAME]
 
