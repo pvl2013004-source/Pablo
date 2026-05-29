@@ -23,7 +23,7 @@ load_dotenv(ROOT_DIR / '.env')
 # Top-level config (must be importable by Vercel / uvicorn / gunicorn)
 MONGO_URL = os.environ.get('MONGO_URL', '').strip()
 DB_NAME = os.environ.get('DB_NAME', 'syvren').strip()
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '').strip()
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',') if o.strip()]
 # Cookies need explicit allowed credential origins (no wildcard).
 COOKIE_ORIGINS = [o for o in CORS_ORIGINS if o != '*']
@@ -468,7 +468,7 @@ async def send_message(session_id: str, payload: SendMessageRequest, user: User 
     if not session:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
-    if not EMERGENT_LLM_KEY:
+    if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="LLM key no configurada")
 
     user_text = payload.content.strip()
