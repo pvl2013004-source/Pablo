@@ -23,8 +23,9 @@ load_dotenv(ROOT_DIR / '.env')
 # Top-level config (must be importable by Vercel / uvicorn / gunicorn)
 MONGO_URL = os.environ.get('MONGO_URL', '').strip()
 DB_NAME = os.environ.get('DB_NAME', 'syvren').strip()
-# DEMO MODE — no external LLM key required. The chat returns a deterministic
-# SYVREN-shaped response. Kept GEMINI_API_KEY env read for future re-enablement.
+# LLM credentials (Emergent Universal Key). When missing or invalid, the chat
+# silently falls back to DEMO mode so the app keeps working for school demos.
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',') if o.strip()]
 # Cookies need explicit allowed credential origins (no wildcard).
@@ -32,6 +33,10 @@ COOKIE_ORIGINS = [o for o in CORS_ORIGINS if o != '*']
 
 EMERGENT_AUTH_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 SESSION_DAYS = 7
+
+# Emergent Universal Key talks to this OpenAI-compatible proxy.
+EMERGENT_PROXY_URL = 'https://integrations.emergentagent.com/llm'
+MODEL_NAME = 'claude-haiku-4-5-20251001'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -228,6 +233,51 @@ PROMPTS_BY_LANG = {
 
 # Backward-compatible default
 TUTOR_SYSTEM_PROMPT = PROMPT_ES
+
+
+def build_demo_response(user_text: str, lang: str, attachments_summary: str = "") -> str:
+    """Deterministic local SYVREN-shaped reply used when the real LLM is unavailable."""
+    lang = (lang or "es").lower()
+    attach_note = (" · adjunto: " + attachments_summary) if attachments_summary else ""
+    templates = {
+        "es": (
+            "## Archivo de Datos\n"
+            f"- Mensaje recibido por SYVREN: \"{user_text[:160]}\"{attach_note}\n"
+            "- Modo: demostración local (sin IA externa)\n\n"
+            "## Paso Activo\n"
+            "Identifica la información clave de tu enunciado y escríbela en una sola frase.\n\n"
+            "## Acción de Cierre\n"
+            "¿Cuál es el dato más importante que ya tienes?"
+        ),
+        "en": (
+            "## Data File\n"
+            f"- Message received by SYVREN: \"{user_text[:160]}\"{attach_note}\n"
+            "- Mode: local demo (no external AI)\n\n"
+            "## Active Step\n"
+            "Identify the key information in your problem and write it in a single sentence.\n\n"
+            "## Closing Action\n"
+            "What is the most important piece of information you already have?"
+        ),
+        "fr": (
+            "## Fichier de Données\n"
+            f"- Message reçu par SYVREN : « {user_text[:160]} »{attach_note}\n"
+            "- Mode : démonstration locale (sans IA externe)\n\n"
+            "## Étape Active\n"
+            "Identifie l'information clé de ton énoncé et écris-la en une seule phrase.\n\n"
+            "## Action de Clôture\n"
+            "Quelle est la donnée la plus importante que tu as déjà ?"
+        ),
+        "pt": (
+            "## Arquivo de Dados\n"
+            f"- Mensagem recebida pelo SYVREN: \"{user_text[:160]}\"{attach_note}\n"
+            "- Modo: demonstração local (sem IA externa)\n\n"
+            "## Passo Ativo\n"
+            "Identifique a informação-chave do enunciado e escreva-a em uma única frase.\n\n"
+            "## Ação de Encerramento\n"
+            "Qual é o dado mais importante que você já tem?"
+        ),
+    }
+    return templates.get(lang, templates["es"])
 
 
 # --- Models ---
@@ -592,44 +642,42 @@ async def send_message(session_id: str, payload: SendMessageRequest, user: User 
         chat_messages.append({"role": "user", "content": model_user_text})
 
     async def _do_send():
-        # DEMO MODE: deterministic local SYVREN response (no external AI).
-        lang = (payload.language or "es").lower()
+        """Try the real LLM; if it fails for any reason, return a local demo response."""
+        # Try Emergent Universal Key first
+        if EMERGENT_LLM_KEY:
+            try:
+                async with httpx.AsyncClient(timeout=40) as http:
+                    r = await http.post(
+                        f"{EMERGENT_PROXY_URL}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {EMERGENT_LLM_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={"model": MODEL_NAME, "messages": chat_messages},
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        text = data["choices"][0]["message"]["content"]
+                        if text:
+                            return text
+                    logger.warning(f"[llm] non-streaming status={r.status_code} body={r.text[:200]} — using demo fallback")
+            except Exception as e:
+                logger.warning(f"[llm] non-streaming exception {e!r} — using demo fallback")
+
+        # Fallback: deterministic local SYVREN response
         attachments = []
         if img_b64:
             attachments.append("imagen")
         if pdf_text:
             attachments.append(f"PDF ({pdf_name or 'documento'})")
-        attach_note = (" · adjunto: " + ", ".join(attachments)) if attachments else ""
-        templates = {
-            "es": (
-                f"## Archivo de Datos\n- Mensaje recibido: \"{user_text[:160]}\"{attach_note}\n- Modo: demostración local\n\n"
-                "## Paso Activo\nIdentifica el dato clave y escríbelo en una sola frase.\n\n"
-                "## Acción de Cierre\n¿Cuál es la información más importante que ya tienes?"
-            ),
-            "en": (
-                f"## Data File\n- Message received: \"{user_text[:160]}\"{attach_note}\n- Mode: local demo\n\n"
-                "## Active Step\nIdentify the key information and write it in a single sentence.\n\n"
-                "## Closing Action\nWhat is the most important piece of information you already have?"
-            ),
-            "fr": (
-                f"## Fichier de Données\n- Message reçu : « {user_text[:160]} »{attach_note}\n- Mode : démonstration locale\n\n"
-                "## Étape Active\nIdentifie la donnée clé et écris-la en une seule phrase.\n\n"
-                "## Action de Clôture\nQuelle est la donnée la plus importante ?"
-            ),
-            "pt": (
-                f"## Arquivo de Dados\n- Mensagem recebida: \"{user_text[:160]}\"{attach_note}\n- Modo: demonstração local\n\n"
-                "## Passo Ativo\nIdentifique o dado-chave e escreva-o em uma única frase.\n\n"
-                "## Ação de Encerramento\nQual é o dado mais importante que você já tem?"
-            ),
-        }
-        return templates.get(lang, templates["es"])
+        return build_demo_response(user_text, (payload.language or "es"), ", ".join(attachments))
 
     response_text = None
     try:
         response_text = await _do_send()
     except Exception:
-        logger.exception("Demo response error")
-        response_text = "SYVREN recibió tu mensaje correctamente."
+        logger.exception("send_message fallback failed")
+        response_text = build_demo_response(user_text, (payload.language or "es"), "")
 
     assistant_msg = Message(session_id=session_id, role="assistant", content=str(response_text))
 
@@ -767,72 +815,75 @@ async def stream_message(
         # Send the user-message metadata immediately so the client can render it
         yield f"data: {json.dumps({'type': 'user', 'message': user_msg.model_dump()})}\n\n"
 
-        # ----------------------------------------------------------------------
-        # DEMO MODE — no external AI. We emit a deterministic SYVREN-shaped
-        # response so the school presentation works even without an LLM key.
-        # The full streaming path to Emergent / Gemini was removed on purpose.
-        # ----------------------------------------------------------------------
         accumulated = ""
-        try:
-            lang = (payload.language or "es").lower()
-            attachments = []
-            if img_b64:
-                attachments.append("imagen")
-            if pdf_text:
-                attachments.append(f"PDF ({pdf_name or 'documento'}, {pdf_pages or '?'} págs)")
-            attach_note = (" · adjunto: " + ", ".join(attachments)) if attachments else ""
+        lang = (payload.language or "es").lower()
+        attachments = []
+        if img_b64:
+            attachments.append("imagen")
+        if pdf_text:
+            attachments.append(f"PDF ({pdf_name or 'documento'}, {pdf_pages or '?'} págs)")
+        attach_summary = ", ".join(attachments)
 
-            templates = {
-                "es": (
-                    "## Archivo de Datos\n"
-                    f"- Mensaje recibido por SYVREN: \"{user_text[:160]}\"{attach_note}\n"
-                    "- Modo: demostración local (sin IA externa)\n\n"
-                    "## Paso Activo\n"
-                    "Identifica la información clave de tu enunciado y escríbela en una sola frase.\n\n"
-                    "## Acción de Cierre\n"
-                    "¿Cuál es el dato más importante que ya tienes?"
-                ),
-                "en": (
-                    "## Data File\n"
-                    f"- Message received by SYVREN: \"{user_text[:160]}\"{attach_note}\n"
-                    "- Mode: local demo (no external AI)\n\n"
-                    "## Active Step\n"
-                    "Identify the key information in your problem and write it in a single sentence.\n\n"
-                    "## Closing Action\n"
-                    "What is the most important piece of information you already have?"
-                ),
-                "fr": (
-                    "## Fichier de Données\n"
-                    f"- Message reçu par SYVREN : « {user_text[:160]} »{attach_note}\n"
-                    "- Mode : démonstration locale (sans IA externe)\n\n"
-                    "## Étape Active\n"
-                    "Identifie l'information clé de ton énoncé et écris-la en une seule phrase.\n\n"
-                    "## Action de Clôture\n"
-                    "Quelle est la donnée la plus importante que tu as déjà ?"
-                ),
-                "pt": (
-                    "## Arquivo de Dados\n"
-                    f"- Mensagem recebida pelo SYVREN: \"{user_text[:160]}\"{attach_note}\n"
-                    "- Modo: demonstração local (sem IA externa)\n\n"
-                    "## Passo Ativo\n"
-                    "Identifique a informação-chave do enunciado e escreva-a em uma única frase.\n\n"
-                    "## Ação de Encerramento\n"
-                    "Qual é o dado mais importante que você já tem?"
-                ),
-            }
-            demo_text = templates.get(lang, templates["es"])
+        # ----------------------------------------------------------------------
+        # 1) Try the REAL LLM (Emergent Universal Key → OpenAI-compatible proxy).
+        #    If anything fails (no key, 401/403, network, etc.) we fall back to
+        #    a deterministic SYVREN-shaped local response so the chat NEVER 500s.
+        # ----------------------------------------------------------------------
+        llm_failed = False
+        if EMERGENT_LLM_KEY:
+            try:
+                async with httpx.AsyncClient(timeout=60) as http:
+                    async with http.stream(
+                        "POST",
+                        f"{EMERGENT_PROXY_URL}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {EMERGENT_LLM_KEY}",
+                            "Content-Type": "application/json",
+                            "Accept": "text/event-stream",
+                        },
+                        json={"model": MODEL_NAME, "messages": chat_messages, "stream": True},
+                    ) as resp:
+                        if resp.status_code >= 400:
+                            body = (await resp.aread()).decode("utf-8", errors="ignore")
+                            logger.warning(f"[llm] status={resp.status_code} body={body[:200]} — falling back to demo mode")
+                            llm_failed = True
+                        else:
+                            async for line in resp.aiter_lines():
+                                if not line or not line.startswith("data:"):
+                                    continue
+                                evt_payload = line[5:].strip()
+                                if evt_payload == "[DONE]":
+                                    break
+                                try:
+                                    evt = json.loads(evt_payload)
+                                    delta = evt.get("choices", [{}])[0].get("delta", {})
+                                    text = delta.get("content") or ""
+                                except Exception:
+                                    text = ""
+                                if text:
+                                    accumulated += text
+                                    yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+            except Exception as e:
+                logger.warning(f"[llm] exception {e!r} — falling back to demo mode")
+                llm_failed = True
+        else:
+            llm_failed = True
 
-            # Stream the demo text word-by-word so the UX feels real.
-            words = demo_text.split(" ")
-            for i, w in enumerate(words):
-                chunk = w if i == 0 else " " + w
-                accumulated += chunk
-                yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
-                await asyncio.sleep(0.02)
-        except Exception as e:
-            logger.exception("Demo response failed")
-            yield f"data: {json.dumps({'type': 'error', 'code': 'DEMO_ERROR', 'detail': str(e)[:200]})}\n\n"
-            return
+        # ----------------------------------------------------------------------
+        # 2) DEMO fallback — streams a SYVREN-shaped local response word-by-word.
+        # ----------------------------------------------------------------------
+        if llm_failed or not accumulated:
+            try:
+                demo_text = build_demo_response(user_text, lang, attach_summary)
+                for i, w in enumerate(demo_text.split(" ")):
+                    chunk = w if i == 0 else " " + w
+                    accumulated += chunk
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+                    await asyncio.sleep(0.02)
+            except Exception as e:
+                logger.exception("Demo response failed")
+                yield f"data: {json.dumps({'type': 'error', 'code': 'DEMO_ERROR', 'detail': str(e)[:200]})}\n\n"
+                return
 
         if not accumulated:
             yield f"data: {json.dumps({'type': 'error', 'code': 'EMPTY'})}\n\n"
