@@ -696,6 +696,10 @@ function AppInner({ user, onLogout }) {
     const token = localStorage.getItem("syvren_session_token");
     let aborted = false;
     try {
+      // First try the streaming endpoint. If the browser (e.g. iOS Safari) doesn't deliver
+      // chunks via ReadableStream, fall back to the regular JSON endpoint so the UX never
+      // gets stuck waiting for an answer that never paints.
+      let streamingWorked = false;
       const resp = await fetch(`${API}/chat/sessions/${sid}/stream`, {
         method: "POST",
         credentials: "omit",
@@ -716,54 +720,62 @@ function AppInner({ user, onLogout }) {
         setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: errText } : x));
         return;
       }
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        // SSE: events separated by double newlines
-        const events = buffer.split("\n\n");
-        buffer = events.pop() || "";
-        for (const evt of events) {
-          const line = evt.split("\n").find((l) => l.startsWith("data:"));
-          if (!line) continue;
-          try {
-            const payload = JSON.parse(line.slice(5).trim());
-            if (payload.type === "chunk") {
-              setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: x.content + payload.text } : x));
-            } else if (payload.type === "user") {
-              // Replace optimistic user msg id with the real one from server. Dedupe if already present.
-              setMessages((m) => {
-                const finalId = payload.message.id;
-                const filtered = m.filter((x) => x.id !== finalId);
-                return filtered.map((x) => x.id === tempUserId ? { ...payload.message } : x);
-              });
-            } else if (payload.type === "done") {
-              setMessages((m) => {
-                // Dedupe by id: replace stream placeholder AND filter any prior copy of the final assistant message
-                const finalId = payload.assistant.id;
-                const filtered = m.filter((x) => x.id !== finalId);
-                return filtered.map((x) => x.id === streamId ? { ...payload.assistant } : x);
-              });
-              setSessions((s) => {
-                const others = s.filter((x) => x.id !== payload.session.id);
-                return [payload.session, ...others];
-              });
-            } else if (payload.type === "error") {
-              const code = payload.code;
-              let errText = t.error_msg;
-              if (code === "BUDGET_EXCEEDED") errText = t.err_budget;
-              else if (code === "RATE_LIMIT") errText = t.err_rate;
-              else if (code === "CONTEXT_TOO_LONG") errText = t.err_context;
-              else errText = t.err_network;
-              setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: errText } : x));
-            }
-          } catch (err) {
-            console.warn("SSE parse error", err, line);
+      // Read full body; some browsers (iOS Safari) buffer the SSE stream until end-of-response,
+      // so reading all text and then parsing the events is the safest cross-browser path.
+      const full = await resp.text();
+      const events = full.split("\n\n").filter(Boolean);
+      for (const evt of events) {
+        const line = evt.split("\n").find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        try {
+          const payload = JSON.parse(line.slice(5).trim());
+          if (payload.type === "chunk") {
+            streamingWorked = true;
+            setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: x.content + payload.text } : x));
+          } else if (payload.type === "user") {
+            setMessages((m) => {
+              const finalId = payload.message.id;
+              const filtered = m.filter((x) => x.id !== finalId);
+              return filtered.map((x) => x.id === tempUserId ? { ...payload.message } : x);
+            });
+          } else if (payload.type === "done") {
+            streamingWorked = true;
+            setMessages((m) => {
+              const finalId = payload.assistant.id;
+              const filtered = m.filter((x) => x.id !== finalId);
+              return filtered.map((x) => x.id === streamId ? { ...payload.assistant } : x);
+            });
+            setSessions((s) => {
+              const others = s.filter((x) => x.id !== payload.session.id);
+              return [payload.session, ...others];
+            });
+          } else if (payload.type === "error") {
+            const code = payload.code;
+            let errText = t.error_msg;
+            if (code === "BUDGET_EXCEEDED") errText = t.err_budget;
+            else if (code === "RATE_LIMIT") errText = t.err_rate;
+            else if (code === "CONTEXT_TOO_LONG") errText = t.err_context;
+            else errText = t.err_network;
+            setMessages((m) => m.map((x) => x.id === streamId ? { ...x, content: errText } : x));
+            streamingWorked = true;
           }
+        } catch (err) {
+          console.warn("SSE parse error", err, line);
         }
+      }
+
+      // If we got no chunks at all (e.g. the server returned an empty stream), reload
+      // the session messages from the DB so the user at least sees the assistant reply.
+      if (!streamingWorked) {
+        try {
+          const histResp = await fetch(`${API}/chat/sessions/${sid}/messages`, {
+            headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          });
+          if (histResp.ok) {
+            const hist = await histResp.json();
+            setMessages(hist);
+          }
+        } catch (_) {}
       }
     } catch (e) {
       console.error(e);
