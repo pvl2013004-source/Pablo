@@ -6,6 +6,9 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Plus, Send, Trash2, Menu, X, Globe, Check, Paperclip, FileText, LogOut, LogIn } from "lucide-react";
 
+// When frontend and backend live on the same origin (e.g. served by the same
+// FastAPI process on Render), REACT_APP_BACKEND_URL can be left empty and we
+// just use relative `/api` paths. Otherwise we point to the explicit backend URL.
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 const API = `${BACKEND_URL}/api`;
 const LOGO_SRC = "/syvren-logo.jpeg";
@@ -391,26 +394,8 @@ const UserMessage = memo(UserMessageBase);
 
 
 function App() {
-  // Hard guard: if backend URL is not configured, show a setup screen instead of failing silently.
-  if (!BACKEND_URL) {
-    return (
-      <div
-        className="min-h-screen flex items-center justify-center p-8"
-        style={{ background: "var(--bg)", color: "var(--text-primary)" }}
-      >
-        <div className="max-w-lg border p-8" style={{ borderColor: "var(--accent)", background: "var(--surface)" }}>
-          <div className="font-mono text-[10px] uppercase tracking-[0.3em]" style={{ color: "var(--accent-cyan)" }}>
-            Configuración pendiente
-          </div>
-          <h2 className="font-heading font-black text-2xl mt-3">Backend no conectado</h2>
-          <p className="mt-4 text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-            Define la variable de entorno <code style={{ color: "var(--accent-cyan)" }}>REACT_APP_BACKEND_URL</code> en
-            tu panel de Vercel apuntando a la URL pública de tu backend.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // When BACKEND_URL is empty we assume the backend lives on the same origin
+  // (single-service deployment). That's fine — relative `/api` paths will work.
   return <AuthGate />;
 }
 
